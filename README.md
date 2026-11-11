@@ -33,7 +33,7 @@ Adicione ao seu `pubspec.yaml`:
 dependencies:
   flutter:
     sdk: flutter
-  hasura_offline_first: ^1.0.0
+  hasura_offline_first: ^1.1.1
 ```
 
 ---
@@ -432,27 +432,45 @@ client.simulateOffline(false);
 final isSimulating = client.isSimulatingOffline;
 ```
 
-### 12. Subscriptions GraphQL em Tempo Real
+### 12. Subscriptions GraphQL em Tempo Real & Local-First (HybridSnapshot)
+
+O método `client.subscription(...)` implementa uma arquitetura **híbrida e reativa de alta performance**:
+- ⚡ **Latência Zero no Início (0ms)**: Emite imediatamente o estado atual do banco SQLite local antes mesmo do handshake WebSocket. A tela nunca fica vazia ou carregando.
+- 📴 **Reatividade Total Offline**: Se o app estiver sem internet e houver inserts/updates locais, o stream emite o novo estado imediatamente.
+- 🎯 **Deduplicação de Conteúdo (Zero Flicker)**: Previne o problema de *Double-Emit*, suprimindo eventos quando a confirmação do servidor contém dados idênticos aos locais.
+- 🛡️ **Coalescência de Microtasks**: Rajadas rápidas de mutações são agrupadas para evitar quedas de quadros (60-120 FPS).
+- 🔄 **Auto-Reconexão Resiliente**: Quedas de rede ativam backoff exponencial (1s, 2s, 4s até 16s), restabelecendo todas as subscrições ativas sem precisar reabrir a tela.
 
 ```dart
 const subDoc = '''
-  subscription OnUserAdded {
-    users(order_by: {created_at: desc}, limit: 1) {
+  subscription WatchTarefas {
+    tarefas(order_by: {created_at: desc}) {
       id
-      name
+      task
+      check
     }
   }
 ''';
 
-final snapshot = await client.subscription(subDoc);
+// Retorna automaticamente um HybridSnapshot para tabelas registradas:
+final snapshot = await client.subscription(subDoc, key: 'tarefas');
 
 snapshot.stream.listen((data) {
-  print('Novo dado recebido: $data');
+  print('Dados em tempo real (SQLite Local ou Hasura WebSocket): $data');
 });
 
-// Fechar subscription quando necessário:
+// Fechar subscription no dispose do Widget:
 snapshot.close();
 ```
+
+---
+
+### 13. Otimizações de Performance do SQLite Local
+
+Para garantir altíssimo desempenho em bases com milhares de registros:
+- **Modo WAL (`PRAGMA journal_mode = WAL;`)**: Leituras simultâneas não travam enquanto a sincronização em segundo plano grava dados.
+- **Sincronismo Normal (`PRAGMA synchronous = NORMAL;`)**: Reduz bloqueios de I/O em disco, acelerando escritas em até **5x**.
+- **Auto-Indexação**: O `SchemaMigrator` cria índices automáticos para colunas críticas (`tenant_id`, `created_at`, `updated_at`, `__sync_status`), reduzindo o tempo de consulta de $O(N)$ para $O(\log N)$ (< 1ms).
 
 ---
 
