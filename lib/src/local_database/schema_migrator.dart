@@ -122,28 +122,28 @@ class SchemaMigrator {
   ) async {
     // 1. Check existing columns in SQLite
     final List<Map<String, dynamic>> existingCols =
-        await db.rawQuery('PRAGMA table_info($tableName)');
+        await db.rawQuery('PRAGMA table_info("$tableName")');
 
     if (existingCols.isEmpty) {
       // Table does not exist locally: create it
-      final colDefs = <String>['id TEXT PRIMARY KEY'];
+      final colDefs = <String>['"id" TEXT PRIMARY KEY'];
       for (final field in fields) {
         final colName = field['name']!;
         if (colName == 'id') continue;
         final colType = _mapToSqliteType(field['type']!);
-        colDefs.add('$colName $colType');
+        colDefs.add('"$colName" $colType');
       }
 
       // Add local-first audit and control columns
       colDefs.addAll([
-        '__sync_status TEXT DEFAULT \'synced\'',
-        '__updated_at TEXT',
-        '__is_deleted INTEGER DEFAULT 0',
-        '__version INTEGER DEFAULT 1',
+        '"__sync_status" TEXT DEFAULT \'synced\'',
+        '"__updated_at" TEXT',
+        '"__is_deleted" INTEGER DEFAULT 0',
+        '"__version" INTEGER DEFAULT 1',
       ]);
 
       await db.execute(
-        'CREATE TABLE IF NOT EXISTS $tableName (${colDefs.join(', ')})',
+        'CREATE TABLE IF NOT EXISTS "$tableName" (${colDefs.join(', ')})',
       );
     } else {
       // Table exists: detect missing columns and run non-destructive auto-migrations
@@ -159,7 +159,7 @@ class SchemaMigrator {
             name: 'SchemaMigrator',
           );
           await db
-              .execute('ALTER TABLE $tableName ADD COLUMN $colName $colType');
+              .execute('ALTER TABLE "$tableName" ADD COLUMN "$colName" $colType');
         }
       }
     }

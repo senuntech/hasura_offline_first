@@ -256,6 +256,15 @@ class SyncEngine {
   }
 
   Future<void> _pullDeltas(sqflite.Database db, String table) async {
+    // Check if table exists locally before pulling deltas
+    final tableCheck = await db.rawQuery(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+      [table],
+    );
+    if (tableCheck.isEmpty) {
+      return;
+    }
+
     // Introspect table columns from metadata to build dynamic query
     final meta = await db.query(
       '_schema_metadata',

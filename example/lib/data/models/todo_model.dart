@@ -12,7 +12,7 @@ class TodoModel extends TodoEntity {
     return TodoModel(
       id: map['id']?.toString() ?? '',
       task: map['task']?.toString() ?? '',
-      check: map['check'] as bool? ?? false,
+      check: map['check'] == true || map['check'] == 1,
     );
   }
 

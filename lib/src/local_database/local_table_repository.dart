@@ -54,7 +54,7 @@ class LocalTableRepository {
     );
 
     if (tableCheck.isEmpty) {
-      final colDefs = <String>['id TEXT PRIMARY KEY'];
+      final colDefs = <String>['"id" TEXT PRIMARY KEY'];
       if (sampleRow != null) {
         sampleRow.forEach((key, value) {
           if (key == 'id' || key.startsWith('__')) return;
@@ -69,10 +69,10 @@ class LocalTableRepository {
       }
 
       colDefs.addAll([
-        '__sync_status TEXT DEFAULT \'synced\'',
-        '__updated_at TEXT',
-        '__is_deleted INTEGER DEFAULT 0',
-        '__version INTEGER DEFAULT 1',
+        '"__sync_status" TEXT DEFAULT \'synced\'',
+        '"__updated_at" TEXT',
+        '"__is_deleted" INTEGER DEFAULT 0',
+        '"__version" INTEGER DEFAULT 1',
       ]);
 
       await db.execute(

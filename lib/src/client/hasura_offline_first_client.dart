@@ -416,7 +416,6 @@ class HasuraOfflineFirst implements IHasuraConnect {
     // If table is registered for Local-First replica: read from SQLite!
     if (tableName != null && syncEngine.registeredTables.contains(tableName)) {
       final localRows = await localRepository.query(tableName);
-      _triggerSyncIfOnline();
       if (key != null) {
         return localRows;
       }
