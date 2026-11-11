@@ -223,6 +223,13 @@ class LocalTableRepository {
         whereArgs: [id],
       );
 
+      // Coalesce rapid updates for the same record to send the latest state
+      await txn.delete(
+        '_sync_log',
+        where: 'table_name = ? AND row_id = ? AND status = ?',
+        whereArgs: [tableName, id, 'pending'],
+      );
+
       // Log outbox mutation
       await txn.insert('_sync_log', {
         'id': _uuid.v4(),
@@ -255,6 +262,13 @@ class LocalTableRepository {
         },
         where: 'id = ?',
         whereArgs: [id],
+      );
+
+      // Coalesce rapid updates for the same record to send the latest state
+      await txn.delete(
+        '_sync_log',
+        where: 'table_name = ? AND row_id = ? AND status = ?',
+        whereArgs: [tableName, id, 'pending'],
       );
 
       // Log outbox mutation

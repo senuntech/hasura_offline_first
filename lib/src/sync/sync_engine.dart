@@ -26,6 +26,8 @@ class SyncEngine {
   final Set<String> registeredTables;
 
   bool _isSyncing = false;
+  bool _hasPendingSync = false;
+  bool _isDisposed = false;
   StreamSubscription<NetworkStatus>? _networkSubscription;
 
   final StreamController<bool> _syncStateController =
@@ -62,11 +64,17 @@ class SyncEngine {
 
   /// Triggers a full bidirectional synchronization (Schema Sync -> Push -> Pull).
   Future<void> synchronize() async {
-    if (_isSyncing) return;
+    if (_isDisposed) return;
+    if (_isSyncing) {
+      _hasPendingSync = true;
+      return;
+    }
     if (networkManager.currentStatus != NetworkStatus.online) return;
 
     _isSyncing = true;
-    _syncStateController.add(true);
+    if (!_syncStateController.isClosed) {
+      _syncStateController.add(true);
+    }
 
     try {
       final db = await databaseProvider.database;
@@ -91,6 +99,10 @@ class SyncEngine {
       _isSyncing = false;
       if (!_syncStateController.isClosed) {
         _syncStateController.add(false);
+      }
+      if (_hasPendingSync && !_isDisposed) {
+        _hasPendingSync = false;
+        scheduleMicrotask(() => synchronize());
       }
     }
   }
@@ -338,13 +350,8 @@ class SyncEngine {
         if (localExisting.isNotEmpty) {
           final localSyncStatus = localExisting.first['__sync_status'];
           if (localSyncStatus != null && localSyncStatus != 'synced') {
-            // Local has pending modification, but Server is Authority for conflicting updates
-            final resolved = conflictResolver.resolveServerWin(
-              localData: localExisting.first,
-              remoteData: remoteRow,
-            );
-            await db.update(table, _sanitize(resolved),
-                where: 'id = ?', whereArgs: [id]);
+            // Local record has pending changes that have not yet been confirmed by Push.
+            // Do NOT overwrite pending local changes with stale server data.
             continue;
           }
         }
@@ -381,6 +388,7 @@ class SyncEngine {
   }
 
   void dispose() {
+    _isDisposed = true;
     _networkSubscription?.cancel();
     _syncStateController.close();
   }

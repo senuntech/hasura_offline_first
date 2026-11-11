@@ -66,6 +66,35 @@ void main() {
       rows = await localRepo.query('teste_offilne');
       expect(rows, isEmpty); // filtered by __is_deleted = 0
     });
+
+    test('rapid sequential updates preserve local changes and coalesce pending logs', () async {
+      // 1. Initial insert
+      await localRepo.insert('teste_offilne', {
+        'id': 'task-rapid-1',
+        'task': 'Item 1',
+        'check_val': 0,
+      });
+
+      // 2. Multiple sequential updates (toggle back and forth)
+      await localRepo.update('teste_offilne', 'task-rapid-1', {'check_val': 1});
+      await localRepo.update('teste_offilne', 'task-rapid-1', {'check_val': 0});
+      await localRepo.update('teste_offilne', 'task-rapid-1', {'check_val': 1});
+
+      // 3. Check final value in local SQLite
+      final rows = await localRepo.query('teste_offilne', where: 'id = ?', whereArgs: ['task-rapid-1']);
+      expect(rows.first['check_val'], equals(1));
+
+      // 4. Check sync logs are coalesced (only 1 pending update log remains)
+      final db = await dbProvider.database;
+      final pendingLogs = await db.query(
+        '_sync_log',
+        where: "table_name = ? AND row_id = ? AND status = 'pending' AND operation = 'update'",
+        whereArgs: ['teste_offilne', 'task-rapid-1'],
+      );
+      expect(pendingLogs.length, equals(1));
+      final payload = jsonDecode(pendingLogs.first['payload'] as String);
+      expect(payload['check_val'], equals(1));
+    });
   });
 
   group('SchemaMigrator (Dynamic Auto-Migration via Introspection)', () {

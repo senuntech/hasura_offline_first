@@ -34,9 +34,9 @@ class TodoController extends ChangeNotifier {
     required this.deleteTodoUseCase,
     required this.client,
   }) {
-    // Listen to local SQLite table changes (local writes or pull delta sync)
+    // Listen to local SQLite table changes (when remote sync brings deltas)
     _tableSub = client.onTableChanged.listen((event) {
-      if (event.tableName == 'teste_offilne') {
+      if (event.tableName == 'teste_offilne' && event.operation == 'sync') {
         fetchTodos(showLoading: false);
       }
     });
