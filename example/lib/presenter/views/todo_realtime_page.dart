@@ -24,6 +24,10 @@ class _TodoRealtimePageState extends State<TodoRealtimePage> {
   bool _isLoading = true;
   String? _errorMessage;
 
+  // Track pending optimistic mutations to reconcile seamlessly with WebSocket events
+  final Map<String, bool> _pendingOptimisticToggles = {};
+  final Set<String> _pendingOptimisticDeletes = {};
+
   @override
   void initState() {
     super.initState();
@@ -74,8 +78,33 @@ class _TodoRealtimePageState extends State<TodoRealtimePage> {
                     TodoModel.fromMap(Map<String, dynamic>.from(item as Map)))
                 .toList();
 
+            // Intelligent Optimistic Reconciliation:
+            // 1. Preserve optimistic temporary additions not yet reflected on server
+            final merged = <TodoEntity>[];
+            for (final localItem in _todos) {
+              if (localItem.id.startsWith('temp-')) {
+                merged.add(localItem);
+              }
+            }
+
+            // 2. Merge server items with active optimistic pending mutations
+            for (final serverTodo in parsed) {
+              if (_pendingOptimisticDeletes.contains(serverTodo.id)) {
+                continue; // Skip items deleted locally that server hasn't purged yet
+              }
+
+              if (_pendingOptimisticToggles.containsKey(serverTodo.id)) {
+                // Keep local optimistic toggle state until acknowledged by server
+                merged.add(serverTodo.copyWith(
+                  check: _pendingOptimisticToggles[serverTodo.id],
+                ));
+              } else {
+                merged.add(serverTodo);
+              }
+            }
+
             setState(() {
-              _todos = parsed;
+              _todos = merged;
               _isLoading = false;
               _errorMessage = null;
             });
@@ -101,6 +130,110 @@ class _TodoRealtimePageState extends State<TodoRealtimePage> {
         _isLoading = false;
       });
     }
+  }
+
+  /// Instant 0ms Optimistic Toggle with background synchronization (Facebook-style)
+  void _toggleTodoOptimistic(TodoEntity todo) {
+    final nextCheck = !todo.check;
+
+    // 1. Immediate in-memory state update (0ms latency / 60-120 FPS)
+    _pendingOptimisticToggles[todo.id] = nextCheck;
+    final index = _todos.indexWhere((t) => t.id == todo.id);
+    if (index != -1) {
+      setState(() {
+        _todos[index] = todo.copyWith(check: nextCheck);
+      });
+    }
+
+    // 2. Non-blocking background persistence & upstream push
+    final controller = context.read<TodoController>();
+    controller.toggleTodo(todo).then((_) {
+      _pendingOptimisticToggles.remove(todo.id);
+    }).catchError((err) {
+      // Rollback on failure
+      _pendingOptimisticToggles.remove(todo.id);
+      if (mounted) {
+        final rollbackIndex = _todos.indexWhere((t) => t.id == todo.id);
+        if (rollbackIndex != -1) {
+          setState(() {
+            _todos[rollbackIndex] = todo.copyWith(check: todo.check);
+          });
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Falha ao atualizar tarefa: $err'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    });
+  }
+
+  /// Instant 0ms Optimistic Delete with background synchronization
+  void _deleteTodoOptimistic(String id) {
+    _pendingOptimisticDeletes.add(id);
+    final removed = _todos.firstWhere(
+      (t) => t.id == id,
+      orElse: () => TodoEntity(id: id, task: '', check: false),
+    );
+
+    // 1. Immediate visual removal from list
+    setState(() {
+      _todos.removeWhere((t) => t.id == id);
+    });
+
+    // 2. Non-blocking background deletion
+    final controller = context.read<TodoController>();
+    controller.deleteTodo(id).then((_) {
+      _pendingOptimisticDeletes.remove(id);
+    }).catchError((err) {
+      _pendingOptimisticDeletes.remove(id);
+      if (mounted && removed.task.isNotEmpty) {
+        setState(() {
+          _todos.add(removed);
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Falha ao excluir tarefa: $err'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    });
+  }
+
+  /// Instant 0ms Optimistic Add with background synchronization
+  void _addTodoOptimistic(String task) {
+    final tempId = 'temp-${DateTime.now().millisecondsSinceEpoch}';
+    final optimisticTodo = TodoEntity(id: tempId, task: task, check: false);
+
+    // 1. Immediate visual insertion at top
+    setState(() {
+      _todos.insert(0, optimisticTodo);
+    });
+
+    // 2. Non-blocking background creation
+    final controller = context.read<TodoController>();
+    controller.addTodo(task).then((_) {
+      // Temporary item will be naturally replaced when WebSocket emits new list
+      if (mounted) {
+        setState(() {
+          _todos.removeWhere((t) => t.id == tempId);
+        });
+      }
+    }).catchError((err) {
+      if (mounted) {
+        setState(() {
+          _todos.removeWhere((t) => t.id == tempId);
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Falha ao adicionar tarefa: $err'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    });
   }
 
   @override
@@ -129,7 +262,7 @@ class _TodoRealtimePageState extends State<TodoRealtimePage> {
             onSubmitted: (value) {
               final trimmed = value.trim();
               if (trimmed.isNotEmpty) {
-                context.read<TodoController>().addTodo(trimmed);
+                _addTodoOptimistic(trimmed);
                 Navigator.of(dialogContext).pop();
               }
             },
@@ -143,7 +276,7 @@ class _TodoRealtimePageState extends State<TodoRealtimePage> {
               onPressed: () {
                 final value = textController.text.trim();
                 if (value.isNotEmpty) {
-                  context.read<TodoController>().addTodo(value);
+                  _addTodoOptimistic(value);
                   Navigator.of(dialogContext).pop();
                 }
               },
@@ -157,8 +290,6 @@ class _TodoRealtimePageState extends State<TodoRealtimePage> {
 
   @override
   Widget build(BuildContext context) {
-    final todoController = context.read<TodoController>();
-
     return Scaffold(
       appBar: AppBar(
         title: Column(
@@ -244,9 +375,8 @@ class _TodoRealtimePageState extends State<TodoRealtimePage> {
                           final todo = _todos[index];
                           return TodoTile(
                             todo: todo,
-                            onToggle: (_) => todoController.toggleTodo(todo),
-                            onDelete: () =>
-                                todoController.deleteTodo(todo.id),
+                            onToggle: (_) => _toggleTodoOptimistic(todo),
+                            onDelete: () => _deleteTodoOptimistic(todo.id),
                           );
                         },
                       ),
@@ -263,3 +393,4 @@ class _TodoRealtimePageState extends State<TodoRealtimePage> {
     );
   }
 }
+
