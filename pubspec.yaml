@@ -1,6 +1,6 @@
 name: hasura_offline_first
 description: Local-First and offline-first GraphQL client compatible with HasuraConnect, featuring an embedded SQLite replica, schema auto-migrations, and server authority conflict resolution.
-version: 1.1.1
+version: 1.2.0
 repository: https://github.com/senuntech/hasura_offline_first
 issue_tracker: https://github.com/senuntech/hasura_offline_first/issues
 
