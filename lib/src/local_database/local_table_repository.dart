@@ -348,6 +348,33 @@ class LocalTableRepository {
     notifyChange(tableName, 'delete', id);
   }
 
+  /// Upserts a batch of remote server rows into the local SQLite table without enqueuing outbox entries.
+  Future<void> upsertBatch(String tableName, List<Map<String, dynamic>> rows) async {
+    if (rows.isEmpty) return;
+    final db = await databaseProvider.database;
+
+    await db.transaction((txn) async {
+      await _ensureTableAndColumns(txn, tableName, rows.first);
+      final batch = txn.batch();
+      for (final r in rows) {
+        final row = Map<String, dynamic>.from(r);
+        row['__sync_status'] = 'synced';
+        row['__updated_at'] = DateTime.now().toIso8601String();
+        row['__is_deleted'] = 0;
+        final sqliteRow = _sanitizeForSqlite(row);
+
+        batch.insert(
+          '"$tableName"',
+          sqliteRow,
+          conflictAlgorithm: sqflite.ConflictAlgorithm.replace,
+        );
+      }
+      await batch.commit(noResult: true);
+    });
+
+    notifyChange(tableName, 'remote_sync');
+  }
+
   Map<String, dynamic> _sanitizeForSqlite(Map<String, dynamic> map) {
     final sanitized = <String, dynamic>{};
     map.forEach((k, v) {

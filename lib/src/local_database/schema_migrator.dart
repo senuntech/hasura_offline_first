@@ -175,5 +175,21 @@ class SchemaMigrator {
       fields.length.toString(),
       DateTime.now().toIso8601String(),
     ]);
+
+    // Ensure fast lookups by indexing common search, ordering and tenant columns if present
+    final List<Map<String, dynamic>> finalCols =
+        await db.rawQuery('PRAGMA table_info("$tableName")');
+    final activeColNames =
+        finalCols.map((c) => c['name'].toString().toLowerCase()).toSet();
+
+    for (final col in ['tenant_id', 'created_at', 'updated_at', '__sync_status']) {
+      if (activeColNames.contains(col)) {
+        try {
+          await db.execute(
+            'CREATE INDEX IF NOT EXISTS "idx_${tableName}_$col" ON "$tableName" ("$col")',
+          );
+        } catch (_) {}
+      }
+    }
   }
 }

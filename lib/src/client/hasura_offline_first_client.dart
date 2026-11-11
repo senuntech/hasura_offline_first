@@ -22,6 +22,7 @@ import '../sync/conflict_resolver.dart';
 import '../sync/sync_engine.dart';
 import '../sync/sync_manager.dart';
 import '../sync/sync_status.dart';
+import 'hybrid_snapshot.dart';
 
 /// Local-First & Offline-First GraphQL client compatible with HasuraConnect,
 /// powered by an embedded SQLite database replica, dynamic schema auto-migrations,
@@ -728,6 +729,69 @@ class HasuraOfflineFirst implements IHasuraConnect {
       key: key,
       type: 'subscription',
     );
+
+    final tableName = key ?? _extractTableFromQuery(document);
+
+    // If table is registered for Local-First replica: return high-performance HybridSnapshot
+    if (tableName != null && syncEngine.registeredTables.contains(tableName)) {
+      final hybrid = HybridSnapshot(
+        tableName: tableName,
+        document: document,
+        variables: variables,
+        localRepository: localRepository,
+        networkManager: _networkManager,
+        queryLocal: () async {
+          final parsedWhere = GraphQLQueryParser.parseWhere(document, variables);
+          final orderBy = _extractOrderByFromQuery(document, variables) ??
+              GraphQLQueryParser.parseOrderBy(document);
+          final limit = _extractLimitFromQuery(document, variables) ??
+              GraphQLQueryParser.parseLimit(document);
+          final offset = _extractOffsetFromQuery(document, variables) ??
+              GraphQLQueryParser.parseOffset(document);
+
+          final localRows = await localRepository.query(
+            tableName,
+            where: parsedWhere?.clause,
+            whereArgs: parsedWhere?.args,
+            orderBy: orderBy,
+            limit: limit,
+            offset: offset,
+          );
+          if (key != null) {
+            return localRows;
+          }
+          return {tableName: localRows};
+        },
+        subscribeRemote: () => _wsClient.subscribe(
+          document,
+          key: key,
+          variables: variables,
+        ),
+        onRemoteData: (remoteData) async {
+          List<Map<String, dynamic>>? remoteRows;
+          if (remoteData is List) {
+            remoteRows = remoteData
+                .map((e) => Map<String, dynamic>.from(e as Map))
+                .toList();
+          } else if (remoteData is Map<String, dynamic>) {
+            if (remoteData[tableName] is List) {
+              remoteRows = (remoteData[tableName] as List)
+                  .map((e) => Map<String, dynamic>.from(e as Map))
+                  .toList();
+            }
+          }
+          if (remoteRows != null && remoteRows.isNotEmpty) {
+            await localRepository.upsertBatch(tableName, remoteRows);
+          }
+        },
+      );
+
+      for (final interceptor in _interceptors) {
+        await interceptor.onSubscription(request, hybrid);
+      }
+
+      return hybrid;
+    }
 
     final snapshot = await _wsClient.subscribe(
       document,

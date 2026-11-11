@@ -40,3 +40,4 @@ export 'src/sync/sync_status.dart';
 
 // Client & Alias
 export 'src/client/hasura_offline_first_client.dart';
+export 'src/client/hybrid_snapshot.dart';

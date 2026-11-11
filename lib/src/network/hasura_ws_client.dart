@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'package:uuid/uuid.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import '../contracts/hasura_connect_interface.dart';
@@ -48,7 +49,22 @@ class SnapshotImpl<T> implements Snapshot<T> {
   }
 }
 
-/// WebSocket client managing subscriptions according to Hasura GraphQL WebSocket protocol.
+class _ActiveSubscription {
+  final String id;
+  final String document;
+  final Map<String, dynamic>? variables;
+  final SnapshotImpl snapshot;
+
+  _ActiveSubscription({
+    required this.id,
+    required this.document,
+    this.variables,
+    required this.snapshot,
+  });
+}
+
+/// WebSocket client managing subscriptions according to Hasura GraphQL WebSocket protocol
+/// with automatic resilient reconnection and exponential backoff.
 class HasuraWebSocketClient {
   final String url;
   final Map<String, String> Function() headersProvider;
@@ -57,13 +73,22 @@ class HasuraWebSocketClient {
   WebSocketChannel? _channel;
   StreamSubscription? _channelSub;
   bool _isConnected = false;
-  final Map<String, SnapshotImpl> _activeSnapshots = {};
+  bool _isDisposed = false;
   Completer<void>? _connectionCompleter;
+
+  final Map<String, _ActiveSubscription> _activeSubscriptions = {};
+
+  // Reconnection backoff state
+  Timer? _reconnectTimer;
+  int _reconnectAttempts = 0;
+  static const int _maxReconnectDelaySeconds = 16;
 
   HasuraWebSocketClient({
     required this.url,
     required this.headersProvider,
   });
+
+  bool get isConnected => _isConnected;
 
   String get _wsUrl {
     if (url.startsWith('https://')) {
@@ -104,6 +129,7 @@ class HasuraWebSocketClient {
       _isConnected = false;
       _connectionCompleter?.completeError(e);
       _connectionCompleter = null;
+      _scheduleReconnect();
       rethrow;
     }
 
@@ -118,54 +144,106 @@ class HasuraWebSocketClient {
 
       if (type == 'connection_ack') {
         _isConnected = true;
-        if (_connectionCompleter != null &&
-            !_connectionCompleter!.isCompleted) {
+        _reconnectAttempts = 0;
+        _reconnectTimer?.cancel();
+        _reconnectTimer = null;
+
+        if (_connectionCompleter != null && !_connectionCompleter!.isCompleted) {
           _connectionCompleter!.complete();
         }
+
+        // Resubscribe all active subscriptions upon reconnect
+        _resubscribeAll();
       } else if (type == 'data' && id != null) {
-        final snapshot = _activeSnapshots[id];
-        if (snapshot != null) {
+        final sub = _activeSubscriptions[id];
+        if (sub != null) {
           final payload = message['payload'];
           if (payload is Map<String, dynamic>) {
             if (payload.containsKey('errors') && payload['errors'] is List) {
               final errors = payload['errors'] as List;
-              snapshot.addError(HasuraRequestError.fromGraphQLErrors(errors));
+              sub.snapshot.addError(HasuraRequestError.fromGraphQLErrors(errors));
             } else {
-              snapshot.add(payload['data'] ?? payload);
+              sub.snapshot.add(payload['data'] ?? payload);
             }
           } else {
-            snapshot.add(payload);
+            sub.snapshot.add(payload);
           }
         }
       } else if (type == 'error' && id != null) {
-        final snapshot = _activeSnapshots[id];
-        if (snapshot != null) {
-          snapshot.addError(HasuraError(
+        final sub = _activeSubscriptions[id];
+        if (sub != null) {
+          sub.snapshot.addError(HasuraError(
             message['payload']?.toString() ?? 'Subscription error',
             extensions: message['payload'],
           ));
         }
       } else if (type == 'complete' && id != null) {
-        _activeSnapshots[id]?.close();
-        _activeSnapshots.remove(id);
+        _activeSubscriptions[id]?.snapshot.close();
+        _activeSubscriptions.remove(id);
       }
     } catch (e, stack) {
-      for (final snapshot in _activeSnapshots.values) {
-        snapshot.addError(e, stack);
+      for (final sub in _activeSubscriptions.values) {
+        sub.snapshot.addError(e, stack);
       }
     }
   }
 
   void _onError(dynamic error) {
     _isConnected = false;
-    for (final snapshot in _activeSnapshots.values) {
-      snapshot.addError(HasuraError('WebSocket error: $error'));
-    }
+    _scheduleReconnect();
   }
 
   void _onDone() {
     _isConnected = false;
     _connectionCompleter = null;
+    _scheduleReconnect();
+  }
+
+  void _scheduleReconnect() {
+    if (_isDisposed || _activeSubscriptions.isEmpty || _reconnectTimer != null) {
+      return;
+    }
+
+    final delaySeconds = min(pow(2, _reconnectAttempts).toInt(), _maxReconnectDelaySeconds);
+    _reconnectAttempts++;
+
+    _reconnectTimer = Timer(Duration(seconds: delaySeconds), () async {
+      _reconnectTimer = null;
+      if (!_isConnected && !_isDisposed && _activeSubscriptions.isNotEmpty) {
+        try {
+          await _connect();
+        } catch (_) {
+          _scheduleReconnect();
+        }
+      }
+    });
+  }
+
+  /// Explicit trigger to reconnect immediately (e.g. when network becomes available).
+  Future<void> reconnect() async {
+    if (_isDisposed) return;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _reconnectAttempts = 0;
+    try {
+      await _connect();
+    } catch (_) {}
+  }
+
+  void _resubscribeAll() {
+    for (final sub in _activeSubscriptions.values) {
+      final startMessage = {
+        'id': sub.id,
+        'type': 'start',
+        'payload': {
+          'query': sub.document,
+          if (sub.variables != null) 'variables': sub.variables,
+        },
+      };
+      try {
+        _channel?.sink.add(jsonEncode(startMessage));
+      } catch (_) {}
+    }
   }
 
   /// Initiates a GraphQL subscription and returns a reactive [Snapshot].
@@ -181,7 +259,14 @@ class HasuraWebSocketClient {
       id: id,
       onClose: (closedId) => _stopSubscription(closedId),
     );
-    _activeSnapshots[id] = snapshot;
+
+    final activeSub = _ActiveSubscription(
+      id: id,
+      document: document,
+      variables: variables,
+      snapshot: snapshot,
+    );
+    _activeSubscriptions[id] = activeSub;
 
     final startMessage = {
       'id': id,
@@ -202,16 +287,21 @@ class HasuraWebSocketClient {
         'id': id,
         'type': 'stop',
       };
-      _channel?.sink.add(jsonEncode(stopMessage));
+      try {
+        _channel?.sink.add(jsonEncode(stopMessage));
+      } catch (_) {}
     }
-    _activeSnapshots.remove(id);
+    _activeSubscriptions.remove(id);
   }
 
   void close() {
-    for (final snapshot in _activeSnapshots.values) {
-      snapshot.close();
+    _isDisposed = true;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    for (final sub in _activeSubscriptions.values) {
+      sub.snapshot.close();
     }
-    _activeSnapshots.clear();
+    _activeSubscriptions.clear();
     _channelSub?.cancel();
     _channel?.sink.close();
     _isConnected = false;

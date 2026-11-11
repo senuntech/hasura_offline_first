@@ -86,6 +86,14 @@ class DatabaseProvider {
     // Ensure control tables exist even if opened previously
     await _createControlTables(db);
 
+    // Apply high-performance SQLite PRAGMAs (WAL mode & NORMAL synchronous)
+    if (!kIsWeb) {
+      try {
+        await db.execute('PRAGMA journal_mode = WAL;');
+        await db.execute('PRAGMA synchronous = NORMAL;');
+      } catch (_) {}
+    }
+
     _database = db;
     return db;
   }
@@ -123,6 +131,14 @@ class DatabaseProvider {
         last_sync_time TEXT NOT NULL
       )
     ''');
+
+    // 4. Critical Performance Indexes on Sync Log
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_sync_log_status_created ON _sync_log (status, created_at)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_sync_log_table_row ON _sync_log (table_name, row_id)',
+    );
   }
 
   /// Closes database connection.
