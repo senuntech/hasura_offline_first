@@ -142,8 +142,7 @@ class LocalTableRepository {
       final colNames =
           tableInfo.map((c) => c['name'].toString().toLowerCase()).toSet();
 
-      final colMatch = RegExp(
-              r'''["']?([a-zA-Z0-9_]+)["']?\s*(ASC|DESC)?''',
+      final colMatch = RegExp(r'''["']?([a-zA-Z0-9_]+)["']?\s*(ASC|DESC)?''',
               caseSensitive: false)
           .firstMatch(safeOrderBy);
       if (colMatch != null) {

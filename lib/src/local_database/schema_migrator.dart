@@ -158,8 +158,8 @@ class SchemaMigrator {
             'Auto-migrating local table "$tableName": ADD COLUMN "$colName" $colType',
             name: 'SchemaMigrator',
           );
-          await db
-              .execute('ALTER TABLE "$tableName" ADD COLUMN "$colName" $colType');
+          await db.execute(
+              'ALTER TABLE "$tableName" ADD COLUMN "$colName" $colType');
         }
       }
     }

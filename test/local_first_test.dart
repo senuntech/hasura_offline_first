@@ -70,7 +70,9 @@ void main() {
       expect(rows, isEmpty); // filtered by __is_deleted = 0
     });
 
-    test('rapid sequential updates preserve local changes and coalesce pending logs', () async {
+    test(
+        'rapid sequential updates preserve local changes and coalesce pending logs',
+        () async {
       // 1. Initial insert
       await localRepo.insert('teste_offilne', {
         'id': 'task-rapid-1',
@@ -84,14 +86,16 @@ void main() {
       await localRepo.update('teste_offilne', 'task-rapid-1', {'check_val': 1});
 
       // 3. Check final value in local SQLite
-      final rows = await localRepo.query('teste_offilne', where: 'id = ?', whereArgs: ['task-rapid-1']);
+      final rows = await localRepo
+          .query('teste_offilne', where: 'id = ?', whereArgs: ['task-rapid-1']);
       expect(rows.first['check_val'], equals(1));
 
       // 4. Check sync logs are coalesced (only 1 pending update log remains)
       final db = await dbProvider.database;
       final pendingLogs = await db.query(
         '_sync_log',
-        where: "table_name = ? AND row_id = ? AND status = 'pending' AND operation = 'update'",
+        where:
+            "table_name = ? AND row_id = ? AND status = 'pending' AND operation = 'update'",
         whereArgs: ['teste_offilne', 'task-rapid-1'],
       );
       expect(pendingLogs.length, equals(1));
@@ -100,9 +104,12 @@ void main() {
     });
 
     test('query extracts and applies order_by from GraphQL document', () async {
-      await localRepo.insert('teste_offilne', {'id': '1', 'task': 'Banana', 'check_val': 0});
-      await localRepo.insert('teste_offilne', {'id': '2', 'task': 'Abacaxi', 'check_val': 0});
-      await localRepo.insert('teste_offilne', {'id': '3', 'task': 'Cereja', 'check_val': 0});
+      await localRepo.insert(
+          'teste_offilne', {'id': '1', 'task': 'Banana', 'check_val': 0});
+      await localRepo.insert(
+          'teste_offilne', {'id': '2', 'task': 'Abacaxi', 'check_val': 0});
+      await localRepo.insert(
+          'teste_offilne', {'id': '3', 'task': 'Cereja', 'check_val': 0});
 
       final fakeConn = FakeConnectivity()..emit([ConnectivityResult.none]);
       final client = HasuraOfflineFirst(
@@ -122,7 +129,8 @@ void main() {
         }
       ''', key: 'teste_offilne') as List;
 
-      expect(resAsc.map((r) => r['task']).toList(), equals(['Abacaxi', 'Banana', 'Cereja']));
+      expect(resAsc.map((r) => r['task']).toList(),
+          equals(['Abacaxi', 'Banana', 'Cereja']));
 
       // Query with order_by task DESC
       final resDesc = await client.query('''
@@ -134,7 +142,8 @@ void main() {
         }
       ''', key: 'teste_offilne') as List;
 
-      expect(resDesc.map((r) => r['task']).toList(), equals(['Cereja', 'Banana', 'Abacaxi']));
+      expect(resDesc.map((r) => r['task']).toList(),
+          equals(['Cereja', 'Banana', 'Abacaxi']));
 
       client.dispose();
     });
