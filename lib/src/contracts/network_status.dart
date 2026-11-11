@@ -9,4 +9,3 @@ typedef ConnectivityListener = void Function(NetworkStatus status);
 
 /// Callback function to unsubscribe/dispose a registered listener.
 typedef VoidCallback = void Function();
-

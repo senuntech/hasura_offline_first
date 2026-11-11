@@ -9,4 +9,3 @@ class ToggleTodoUseCase {
     return await repository.toggleTodo(id: id, currentCheck: currentCheck);
   }
 }
-

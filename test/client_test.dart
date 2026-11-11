@@ -76,7 +76,8 @@ void main() {
       expect(offlineResult, equals(mockResponseData['data']));
     });
 
-    test('offline query throws HasuraCacheMissException on cache miss', () async {
+    test('offline query throws HasuraCacheMissException on cache miss',
+        () async {
       // Go offline
       fakeConnectivity.emit([ConnectivityResult.none]);
       await pumpEventQueue();
@@ -89,7 +90,9 @@ void main() {
       );
     });
 
-    test('offline mutation enqueues into Outbox and synchronizes when back online', () async {
+    test(
+        'offline mutation enqueues into Outbox and synchronizes when back online',
+        () async {
       // 1. Go offline
       fakeConnectivity.emit([ConnectivityResult.none]);
       await pumpEventQueue();
@@ -115,7 +118,9 @@ void main() {
       expect(pendingAfter, isEmpty);
     });
 
-    test('offline mutation updates local cache so next offline query returns added item', () async {
+    test(
+        'offline mutation updates local cache so next offline query returns added item',
+        () async {
       // 1. App starts offline
       fakeConnectivity.emit([ConnectivityResult.none]);
       await pumpEventQueue();
@@ -143,4 +148,3 @@ void main() {
     });
   });
 }
-

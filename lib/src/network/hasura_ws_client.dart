@@ -217,4 +217,3 @@ class HasuraWebSocketClient {
     _isConnected = false;
   }
 }
-

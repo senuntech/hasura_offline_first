@@ -32,4 +32,3 @@ class TodoModel extends TodoEntity {
     );
   }
 }
-

@@ -34,7 +34,8 @@ void main() {
       await sub.cancel();
     });
 
-    test('addListener triggers immediately and returns cancel callback', () async {
+    test('addListener triggers immediately and returns cancel callback',
+        () async {
       final recorded = <NetworkStatus>[];
       final cancel = networkManager.addListener((status) {
         recorded.add(status);
@@ -53,4 +54,3 @@ void main() {
     });
   });
 }
-

@@ -80,4 +80,3 @@ class HasuraCacheMissException extends HasuraError {
   @override
   String toString() => 'HasuraCacheMissException: $message (hash: $queryHash)';
 }
-

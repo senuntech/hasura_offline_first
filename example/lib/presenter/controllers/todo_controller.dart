@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:hasura_offline_first/hasura_offline_first.dart';
 import 'package:uuid/uuid.dart';
@@ -23,6 +24,9 @@ class TodoController extends ChangeNotifier {
   String? _errorMessage;
   final _uuid = const Uuid();
 
+  StreamSubscription? _tableSub;
+  StreamSubscription? _conflictSub;
+
   TodoController({
     required this.getTodosUseCase,
     required this.addTodoUseCase,
@@ -30,10 +34,28 @@ class TodoController extends ChangeNotifier {
     required this.deleteTodoUseCase,
     required this.client,
   }) {
-    // Listen to synced items when connection is reestablished to refresh list
-    client.onSyncedItem.listen((_) {
-      fetchTodos(showLoading: false);
+    // Listen to local SQLite table changes (local writes or pull delta sync)
+    _tableSub = client.onTableChanged.listen((event) {
+      if (event.tableName == 'teste_offilne') {
+        fetchTodos(showLoading: false);
+      }
     });
+
+    // Listen to Server Authority conflict purges (when another user deleted the record on server)
+    _conflictSub = client.onConflictPurge.listen((event) {
+      if (event.tableName == 'teste_offilne') {
+        _errorMessage =
+            'Item excluído remotamente por outro usuário no servidor.';
+        fetchTodos(showLoading: false);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _tableSub?.cancel();
+    _conflictSub?.cancel();
+    super.dispose();
   }
 
   List<TodoEntity> get todos => List.unmodifiable(_todos);
@@ -116,4 +138,3 @@ class TodoController extends ChangeNotifier {
     }
   }
 }
-

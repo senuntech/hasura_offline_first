@@ -24,4 +24,3 @@ class FakeConnectivity implements Connectivity {
     _controller.close();
   }
 }
-

@@ -106,7 +106,8 @@ class FileStorageDriver implements ILocalStorageDriver {
       final map = _cache.map((key, value) => MapEntry(key, value.toMap()));
       await _cacheFile.writeAsString(jsonEncode(map), flush: true);
     } catch (e) {
-      dev.log('Erro ao persistir cache no disco: $e', name: 'FileStorageDriver', error: e);
+      dev.log('Erro ao persistir cache no disco: $e',
+          name: 'FileStorageDriver', error: e);
     }
   }
 
@@ -119,7 +120,8 @@ class FileStorageDriver implements ILocalStorageDriver {
       final list = _outbox.map((i) => i.toMap()).toList();
       await _outboxFile.writeAsString(jsonEncode(list), flush: true);
     } catch (e) {
-      dev.log('Erro ao persistir outbox no disco: $e', name: 'FileStorageDriver', error: e);
+      dev.log('Erro ao persistir outbox no disco: $e',
+          name: 'FileStorageDriver', error: e);
     }
   }
 

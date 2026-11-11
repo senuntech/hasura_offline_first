@@ -109,4 +109,3 @@ abstract class IHasuraConnect {
   /// Closes active connections and listeners.
   void dispose();
 }
-

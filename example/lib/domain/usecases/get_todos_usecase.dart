@@ -10,4 +10,3 @@ class GetTodosUseCase {
     return await repository.getTodos();
   }
 }
-

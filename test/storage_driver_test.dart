@@ -18,7 +18,11 @@ void main() {
     });
 
     test('saves and retrieves cached query', () async {
-      await driver.saveCache('hash123', {'users': [{'id': '1'}]});
+      await driver.saveCache('hash123', {
+        'users': [
+          {'id': '1'}
+        ]
+      });
       final cached = await driver.getCache('hash123');
 
       expect(cached, isNotNull);
@@ -82,7 +86,9 @@ void main() {
       await secondDriver.close();
     });
 
-    test('full offline lifecycle: add offline, restart client with file storage, query offline', () async {
+    test(
+        'full offline lifecycle: add offline, restart client with file storage, query offline',
+        () async {
       // 1. Instancia 1 do cliente (App aberto pela primeira vez offline)
       final fakeConn1 = FakeConnectivity()..emit([ConnectivityResult.none]);
       final client1 = HasuraOfflineFirst(
@@ -129,11 +135,11 @@ void main() {
       final list = result as List;
       expect(list.length, equals(1));
       expect(list.first['id'], equals('persisted-uuid-999'));
-      expect(list.first['task'], equals('Tarefa que sobrevive ao fechar o app'));
+      expect(
+          list.first['task'], equals('Tarefa que sobrevive ao fechar o app'));
 
       client2.dispose();
       fakeConn2.dispose();
     });
   });
 }
-

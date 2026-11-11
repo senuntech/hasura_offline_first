@@ -14,4 +14,3 @@ abstract class ITodoRepository {
   /// Deletes a todo by its ID.
   Future<void> deleteTodo(String id);
 }
-

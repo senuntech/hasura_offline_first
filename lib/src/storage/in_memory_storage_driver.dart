@@ -79,4 +79,3 @@ class InMemoryStorageDriver implements ILocalStorageDriver {
     _outbox.clear();
   }
 }
-

@@ -119,4 +119,3 @@ class SyncManager {
     _syncedItemController.close();
   }
 }
-

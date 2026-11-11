@@ -41,4 +41,3 @@ class ConnectivityController extends ChangeNotifier {
     super.dispose();
   }
 }
-

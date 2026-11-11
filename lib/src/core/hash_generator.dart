@@ -8,7 +8,8 @@ class HashGenerator {
   /// Generates a SHA-256 hex string based on normalized [document] and deterministic [variables].
   static String generate(String document, [Map<String, dynamic>? variables]) {
     final normalizedDoc = normalizeDocument(document);
-    final sortedVars = variables != null ? sortMap(variables) : <String, dynamic>{};
+    final sortedVars =
+        variables != null ? sortMap(variables) : <String, dynamic>{};
     final serializedVars = jsonEncode(sortedVars);
 
     final input = '$normalizedDoc|$serializedVars';
@@ -21,7 +22,7 @@ class HashGenerator {
   static String normalizeDocument(String document) {
     return document
         .replaceAll(RegExp(r'#[^\n\r]*'), '') // Remove GraphQL comments
-        .replaceAll(RegExp(r'\s+'), ' ')       // Collapse whitespace
+        .replaceAll(RegExp(r'\s+'), ' ') // Collapse whitespace
         .trim();
   }
 
@@ -59,4 +60,3 @@ class HashGenerator {
     }).toList();
   }
 }
-

@@ -20,7 +20,8 @@ class TodoRepositoryImpl implements ITodoRepository {
   }
 
   @override
-  Future<void> toggleTodo({required String id, required bool currentCheck}) async {
+  Future<void> toggleTodo(
+      {required String id, required bool currentCheck}) async {
     await remoteDataSource.toggleTodo(id: id, check: !currentCheck);
   }
 
@@ -29,4 +30,3 @@ class TodoRepositoryImpl implements ITodoRepository {
     await remoteDataSource.deleteTodo(id);
   }
 }
-

@@ -107,13 +107,15 @@ class _TodoPageState extends State<TodoPage> {
                             physics: const AlwaysScrollableScrollPhysics(),
                             children: const [
                               SizedBox(height: 100),
-                              Icon(Icons.checklist, size: 70, color: Colors.grey),
+                              Icon(Icons.checklist,
+                                  size: 70, color: Colors.grey),
                               SizedBox(height: 16),
                               Center(
                                 child: Text(
                                   'Nenhuma tarefa cadastrada.\nClique no botão "+" para adicionar!',
                                   textAlign: TextAlign.center,
-                                  style: TextStyle(color: Colors.grey, fontSize: 16),
+                                  style: TextStyle(
+                                      color: Colors.grey, fontSize: 16),
                                 ),
                               ),
                             ],
@@ -144,4 +146,3 @@ class _TodoPageState extends State<TodoPage> {
     );
   }
 }
-

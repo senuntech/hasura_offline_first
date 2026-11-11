@@ -3,7 +3,8 @@ import 'package:hasura_offline_first/hasura_offline_first.dart';
 
 void main() {
   group('HashGenerator', () {
-    test('generates same hash for identical query with different whitespaces', () {
+    test('generates same hash for identical query with different whitespaces',
+        () {
       const doc1 = '''
         query GetUser {
           users {
@@ -21,7 +22,8 @@ void main() {
       expect(hash1, equals(hash2));
     });
 
-    test('generates same hash for maps with different key insertion orders', () {
+    test('generates same hash for maps with different key insertion orders',
+        () {
       const doc = 'query GetUsers(\$limit: Int, \$offset: Int) { users }';
       final var1 = {'offset': 10, 'limit': 20};
       final var2 = {'limit': 20, 'offset': 10};
@@ -41,4 +43,3 @@ void main() {
     });
   });
 }
-

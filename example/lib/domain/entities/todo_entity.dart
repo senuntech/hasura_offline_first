@@ -34,4 +34,3 @@ class TodoEntity {
   @override
   int get hashCode => id.hashCode ^ task.hashCode ^ check.hashCode;
 }
-

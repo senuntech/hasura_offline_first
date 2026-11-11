@@ -129,4 +129,3 @@ abstract class ILocalStorageDriver {
 
   Future<void> close();
 }
-

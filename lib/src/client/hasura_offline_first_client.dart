@@ -9,12 +9,19 @@ import '../core/exceptions.dart';
 import '../core/hash_generator.dart';
 import '../core/network_manager.dart';
 import '../interceptors/token_interceptor.dart';
+import '../local_database/database_provider.dart';
+import '../local_database/local_table_repository.dart';
+import '../local_database/schema_migrator.dart';
 import '../network/hasura_http_client.dart';
 import '../network/hasura_ws_client.dart';
 import '../storage/file_storage_driver.dart';
+import '../sync/conflict_resolver.dart';
+import '../sync/sync_engine.dart';
 import '../sync/sync_manager.dart';
 
-/// Offline-first GraphQL client compatible with HasuraConnect.
+/// Local-First & Offline-First GraphQL client compatible with HasuraConnect,
+/// powered by an embedded SQLite database replica, dynamic schema auto-migrations,
+/// and Server Authority conflict resolution.
 class HasuraOfflineFirst implements IHasuraConnect {
   @override
   final String url;
@@ -23,9 +30,14 @@ class HasuraOfflineFirst implements IHasuraConnect {
 
   final NetworkManager _networkManager;
   final ILocalStorageDriver _storageDriver;
+  final DatabaseProvider databaseProvider;
+  late final LocalTableRepository localRepository;
+  late final SchemaMigrator schemaMigrator;
+  late final ConflictResolver conflictResolver;
+  late final SyncEngine syncEngine;
+  late final SyncManager _syncManager;
   late final HasuraHttpClient _httpClient;
   late final HasuraWebSocketClient _wsClient;
-  late final SyncManager _syncManager;
   final _uuid = const Uuid();
 
   HasuraOfflineFirst(
@@ -35,11 +47,14 @@ class HasuraOfflineFirst implements IHasuraConnect {
     List<Interceptor>? interceptors,
     ILocalStorageDriver? storageDriver,
     NetworkManager? networkManager,
+    DatabaseProvider? customDatabaseProvider,
     http.Client? httpClient,
+    Set<String>? tables,
   })  : _headers = headers ?? {},
         _interceptors = [...?interceptors],
         _networkManager = networkManager ?? NetworkManager(),
-        _storageDriver = storageDriver ?? FileStorageDriver() {
+        _storageDriver = storageDriver ?? FileStorageDriver(),
+        databaseProvider = customDatabaseProvider ?? DatabaseProvider() {
     if (token != null) {
       _interceptors.insert(0, TokenInterceptor(token));
     }
@@ -61,6 +76,35 @@ class HasuraOfflineFirst implements IHasuraConnect {
       url: url,
       headersProvider: () => _headers,
     );
+
+    localRepository = LocalTableRepository(databaseProvider: databaseProvider);
+
+    schemaMigrator = SchemaMigrator(
+      httpClient: _httpClient,
+      url: url,
+      headersProvider: () => _headers,
+    );
+
+    conflictResolver = ConflictResolver();
+
+    syncEngine = SyncEngine(
+      databaseProvider: databaseProvider,
+      localRepository: localRepository,
+      schemaMigrator: schemaMigrator,
+      conflictResolver: conflictResolver,
+      httpClient: _httpClient,
+      networkManager: _networkManager,
+      url: url,
+      headersProvider: () => _headers,
+      tables: tables,
+    );
+
+    // Initial background sync check
+    _networkManager.isConnected.then((connected) {
+      if (connected) {
+        synchronize();
+      }
+    });
   }
 
   @override
@@ -79,16 +123,29 @@ class HasuraOfflineFirst implements IHasuraConnect {
   bool get isSimulatingOffline => _networkManager.isSimulatingOffline;
 
   /// Manually simulates offline mode for testing and demonstration purposes.
-  void simulateOffline(bool offline) => _networkManager.simulateOffline(offline);
+  void simulateOffline(bool offline) =>
+      _networkManager.simulateOffline(offline);
 
-  /// Stream signaling when background mutation sync starts or finishes.
-  Stream<bool> get onSyncStateChanged => _syncManager.onSyncStateChanged;
+  /// Stream signaling when bidirectional background sync starts or finishes.
+  Stream<bool> get onSyncStateChanged => syncEngine.onSyncStateChanged;
 
-  /// Stream of mutations synced successfully when back online.
+  /// Stream of mutations synced successfully when back online via Outbox.
   Stream<OutboxItem> get onSyncedItem => _syncManager.onSyncedItem;
 
-  /// Storage driver used by this client.
+  /// Stream emitting table changes in the local SQLite database.
+  Stream<TableChangeEvent> get onTableChanged => localRepository.onTableChanged;
+
+  /// Stream emitting when a record is deleted locally because another user deleted it on the server.
+  Stream<ConflictPurgeEvent> get onConflictPurge =>
+      conflictResolver.onConflictPurge;
+
+  /// Storage driver used for document caching.
   ILocalStorageDriver get storageDriver => _storageDriver;
+
+  /// Registers a table to be continuously synchronized and auto-migrated with Hasura.
+  void registerTable(String table) {
+    syncEngine.registerTable(table);
+  }
 
   /// Registers a network status listener callback and returns a disposer function.
   @override
@@ -96,10 +153,67 @@ class HasuraOfflineFirst implements IHasuraConnect {
     return _networkManager.addListener(callback);
   }
 
+  /// Executes a query directly on the local SQLite table with zero network latency.
+  Future<List<Map<String, dynamic>>> queryLocal(
+    String tableName, {
+    String? where,
+    List<dynamic>? whereArgs,
+    String? orderBy,
+    int? limit,
+    int? offset,
+  }) async {
+    registerTable(tableName);
+    return await localRepository.query(
+      tableName,
+      where: where,
+      whereArgs: whereArgs,
+      orderBy: orderBy,
+      limit: limit,
+      offset: offset,
+    );
+  }
+
+  /// Inserts a row into the local SQLite table and queues an upstream sync.
+  Future<Map<String, dynamic>> insertLocal(
+    String tableName,
+    Map<String, dynamic> row,
+  ) async {
+    registerTable(tableName);
+    final inserted = await localRepository.insert(tableName, row);
+    _triggerSyncIfOnline();
+    return inserted;
+  }
+
+  /// Updates an existing row in the local SQLite table and queues an upstream sync.
+  Future<void> updateLocal(
+    String tableName,
+    String id,
+    Map<String, dynamic> row,
+  ) async {
+    registerTable(tableName);
+    await localRepository.update(tableName, id, row);
+    _triggerSyncIfOnline();
+  }
+
+  /// Deletes a row locally (tombstone) and queues an upstream sync.
+  Future<void> deleteLocal(String tableName, String id) async {
+    registerTable(tableName);
+    await localRepository.delete(tableName, id);
+    _triggerSyncIfOnline();
+  }
+
+  void _triggerSyncIfOnline() {
+    _networkManager.isConnected.then((connected) {
+      if (connected) {
+        synchronize();
+      }
+    });
+  }
+
   String? _extractTableFromQuery(String document) {
     final normalized = document.replaceAll(RegExp(r'#[^\n\r]*'), '');
-    final match =
-        RegExp(r'(?:query[^{]*\{\s*|{\s*)([a-zA-Z0-9_]+)').firstMatch(normalized);
+    final match = RegExp(r'(?:query[^{]*\{\s*|{\s*)([a-zA-Z0-9_]+)')
+        .firstMatch(normalized);
     return match?.group(1);
   }
 
@@ -124,10 +238,10 @@ class HasuraOfflineFirst implements IHasuraConnect {
     try {
       final insertMatch =
           RegExp(r'insert_([a-zA-Z0-9_]+?)(?:_one|\b|\()').firstMatch(document);
-      final updateMatch =
-          RegExp(r'update_([a-zA-Z0-9_]+?)(?:_by_pk|\b|\()').firstMatch(document);
-      final deleteMatch =
-          RegExp(r'delete_([a-zA-Z0-9_]+?)(?:_by_pk|\b|\()').firstMatch(document);
+      final updateMatch = RegExp(r'update_([a-zA-Z0-9_]+?)(?:_by_pk|\b|\()')
+          .firstMatch(document);
+      final deleteMatch = RegExp(r'delete_([a-zA-Z0-9_]+?)(?:_by_pk|\b|\()')
+          .firstMatch(document);
 
       if (insertMatch != null) {
         final table = insertMatch.group(1)!;
@@ -177,7 +291,6 @@ class HasuraOfflineFirst implements IHasuraConnect {
     list.add(item);
     await _storageDriver.saveCache(tableKey, {'list': list, table: list});
 
-    // Update all matching cached queries
     final keys = await _storageDriver.getAllCacheKeys();
     for (final key in keys) {
       if (key == tableKey) continue;
@@ -193,8 +306,7 @@ class HasuraOfflineFirst implements IHasuraConnect {
           l.add(item);
           cacheData[table] = l;
           updated = true;
-        }
-        if (cacheData.containsKey('list') && cacheData['list'] is List) {
+        } else if (cacheData.containsKey('list') && cacheData['list'] is List) {
           final l = List<dynamic>.from(cacheData['list'] as List);
           if (item.containsKey('id')) {
             l.removeWhere((i) =>
@@ -290,14 +402,29 @@ class HasuraOfflineFirst implements IHasuraConnect {
     }
   }
 
+  /// Standard GraphQL query compatible with HasuraConnect.
+  /// If the query targets a registered table, reads directly from the local SQLite replica.
+  /// Otherwise, uses the document cache driver.
   @override
   Future<dynamic> query(
     String document, {
     String? key,
     Map<String, dynamic>? variables,
   }) async {
-    final queryHash = HashGenerator.generate(document, variables);
     final tableName = key ?? _extractTableFromQuery(document);
+
+    // If table is registered for Local-First replica: read from SQLite!
+    if (tableName != null && syncEngine.registeredTables.contains(tableName)) {
+      final localRows = await localRepository.query(tableName);
+      _triggerSyncIfOnline();
+      if (key != null) {
+        return localRows;
+      }
+      return {tableName: localRows};
+    }
+
+    // Classic GraphQL query cache pipeline
+    final queryHash = HashGenerator.generate(document, variables);
     final isOnline = await isConnected;
 
     if (isOnline) {
@@ -312,14 +439,12 @@ class HasuraOfflineFirst implements IHasuraConnect {
 
       final data = await _httpClient.execute(request);
 
-      // Save to local cache by queryHash
       if (data is Map<String, dynamic>) {
         await _storageDriver.saveCache(queryHash, data);
       } else if (data is List) {
         await _storageDriver.saveCache(queryHash, {'list': data});
       }
 
-      // Also index by table name
       if (tableName != null) {
         if (data is List) {
           await _storageDriver.saveCache(
@@ -337,10 +462,8 @@ class HasuraOfflineFirst implements IHasuraConnect {
 
       return data;
     } else {
-      // Offline fallback
       var cached = await _storageDriver.getCache(queryHash);
 
-      // Fallback to table-level cache if queryHash missed
       if (cached == null && tableName != null) {
         cached = await _storageDriver.getCache('table:$tableName');
       }
@@ -367,12 +490,68 @@ class HasuraOfflineFirst implements IHasuraConnect {
     }
   }
 
+  /// Standard GraphQL mutation compatible with HasuraConnect.
+  /// If the mutation targets a registered table, executes locally in SQLite and queues sync.
+  /// Otherwise, uses HTTP (when online) or Outbox queue (when offline).
   @override
   Future<dynamic> mutation(
     String document, {
     String? key,
     Map<String, dynamic>? variables,
   }) async {
+    final insertMatch =
+        RegExp(r'insert_([a-zA-Z0-9_]+?)(?:_one|\b|\()').firstMatch(document);
+    final updateMatch =
+        RegExp(r'update_([a-zA-Z0-9_]+?)(?:_by_pk|\b|\()').firstMatch(document);
+    final deleteMatch =
+        RegExp(r'delete_([a-zA-Z0-9_]+?)(?:_by_pk|\b|\()').firstMatch(document);
+
+    final targetTable =
+        insertMatch?.group(1) ?? updateMatch?.group(1) ?? deleteMatch?.group(1);
+
+    // If target table is registered for Local-First replica: execute on SQLite!
+    if (targetTable != null &&
+        syncEngine.registeredTables.contains(targetTable)) {
+      if (insertMatch != null) {
+        final itemData = _extractItemData(variables) ?? {};
+        final inserted = await insertLocal(targetTable, itemData);
+        return {
+          'insert_${targetTable}_one': inserted,
+          '_local': true,
+        };
+      } else if (updateMatch != null) {
+        final id = (variables?['id'] ??
+                variables?['pk_columns']?['id'] ??
+                variables?['where']?['id']?['_eq'])
+            ?.toString();
+        if (id != null) {
+          final updates = variables?['_set'] is Map
+              ? Map<String, dynamic>.from(variables!['_set'] as Map)
+              : (variables != null
+                  ? Map<String, dynamic>.from(variables)
+                  : <String, dynamic>{});
+          await updateLocal(targetTable, id, updates);
+          return {
+            'update_${targetTable}_by_pk': {'id': id, ...updates},
+            '_local': true,
+          };
+        }
+      } else if (deleteMatch != null) {
+        final id = (variables?['id'] ??
+                variables?['pk_columns']?['id'] ??
+                variables?['where']?['id']?['_eq'])
+            ?.toString();
+        if (id != null) {
+          await deleteLocal(targetTable, id);
+          return {
+            'delete_${targetTable}_by_pk': {'id': id},
+            '_local': true,
+          };
+        }
+      }
+    }
+
+    // Classic mutation pipeline
     final isOnline = await isConnected;
 
     if (isOnline) {
@@ -389,7 +568,6 @@ class HasuraOfflineFirst implements IHasuraConnect {
       await _applyMutationToLocalCache(document, variables);
       return result;
     } else {
-      // Enqueue to outbox for background synchronization
       final outboxItem = OutboxItem(
         id: _uuid.v4(),
         document: document,
@@ -398,7 +576,6 @@ class HasuraOfflineFirst implements IHasuraConnect {
       );
 
       await _storageDriver.enqueueOutbox(outboxItem);
-      // Immediately reflect mutation on local cache so queries see it offline
       await _applyMutationToLocalCache(document, variables);
 
       return {
@@ -439,15 +616,21 @@ class HasuraOfflineFirst implements IHasuraConnect {
     return snapshot;
   }
 
+  /// Triggers full bidirectional synchronization (Push pending mutations + Pull deltas).
   @override
   Future<void> synchronize() async {
     await _syncManager.synchronize();
+    await syncEngine.synchronize();
   }
 
   @override
   void dispose() {
     _networkManager.dispose();
     _syncManager.dispose();
+    syncEngine.dispose();
+    conflictResolver.dispose();
+    localRepository.dispose();
+    databaseProvider.close();
     _wsClient.close();
     _httpClient.close();
   }

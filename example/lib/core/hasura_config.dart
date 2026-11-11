@@ -12,10 +12,10 @@ class HasuraConfig {
         'x-hasura-admin-secret': adminSecret,
         'Content-Type': 'application/json',
       },
+      tables: {'teste_offilne'},
       interceptors: [
         LogInterceptor(request: true, response: true, error: true),
       ],
     );
   }
 }
-

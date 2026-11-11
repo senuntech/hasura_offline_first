@@ -51,8 +51,10 @@ class AppWidget extends StatelessWidget {
 
         // 4. Presenter Controllers (ChangeNotifier)
         ChangeNotifierProxyProvider<HasuraOfflineFirst, ConnectivityController>(
-          create: (ctx) => ConnectivityController(ctx.read<HasuraOfflineFirst>()),
-          update: (_, client, controller) => controller ?? ConnectivityController(client),
+          create: (ctx) =>
+              ConnectivityController(ctx.read<HasuraOfflineFirst>()),
+          update: (_, client, controller) =>
+              controller ?? ConnectivityController(client),
         ),
         ChangeNotifierProxyProvider4<GetTodosUseCase, AddTodoUseCase,
             ToggleTodoUseCase, DeleteTodoUseCase, TodoController>(
@@ -63,7 +65,8 @@ class AppWidget extends StatelessWidget {
             deleteTodoUseCase: ctx.read<DeleteTodoUseCase>(),
             client: ctx.read<HasuraOfflineFirst>(),
           ),
-          update: (context, getTodos, addTodo, toggleTodo, deleteTodo, controller) =>
+          update: (context, getTodos, addTodo, toggleTodo, deleteTodo,
+                  controller) =>
               controller ??
               TodoController(
                 getTodosUseCase: getTodos,
@@ -86,4 +89,3 @@ class AppWidget extends StatelessWidget {
     );
   }
 }
-

@@ -19,4 +19,3 @@ class TokenInterceptor extends Interceptor {
     return request;
   }
 }
-

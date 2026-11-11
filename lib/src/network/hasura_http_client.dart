@@ -121,4 +121,3 @@ class HasuraHttpClient {
     _client.close();
   }
 }
-

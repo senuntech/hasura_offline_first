@@ -112,4 +112,3 @@ class NetworkManager {
     _statusController.close();
   }
 }
-

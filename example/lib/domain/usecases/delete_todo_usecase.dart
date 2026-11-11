@@ -9,4 +9,3 @@ class DeleteTodoUseCase {
     return await repository.deleteTodo(id);
   }
 }
-

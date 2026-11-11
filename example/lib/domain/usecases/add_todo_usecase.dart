@@ -10,4 +10,3 @@ class AddTodoUseCase {
     return await repository.addTodo(todo);
   }
 }
-
