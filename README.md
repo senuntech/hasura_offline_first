@@ -173,35 +173,95 @@ if (result is Map && result['_offline'] == true) {
 
 ### 7. Arquitetura Híbrida: Single-Tenant vs Multi-Tenant
 
-O package oferece flexibilidade total para operar tanto em **bases globais únicas** quanto em **arquiteturas multi-empresa (Multi-Tenant)** com isolamento estrito de segurança e conformidade LGPD/GDPR:
+O package suporta nativamente tanto **aplicações de base única (Single-Tenant)** quanto **aplicações multi-empresa ou multi-usuário (Multi-Tenant)**.
 
-#### A. Modo Single-Tenant (Padrão)
-Sem nenhuma configuração adicional, todas as tabelas usam o banco SQLite padrão (`hasura_local_replica.db`) e sincronizam de forma aberta:
-```dart
-final client = HasuraOfflineFirst('https://meu-app.hasura.app/v1/graphql');
-```
+Em aplicações SaaS B2B ou sistemas com múltiplos clientes compartilhando a mesma infraestrutura Hasura, **é crítico não misturar os dados locais** no mesmo banco de dados por questões de segurança da informação, privacidade e conformidade com **LGPD/GDPR**.
 
-#### B. Modo Multi-Tenant (Isolamento por Empresa / Workspace)
-Ao informar `tenantConfig`:
-1. Cada organização ganha um arquivo SQLite dedicado (`hasura_tenant_<tenantId>.db`), impedindo contaminação de dados.
-2. O `SyncEngine` injeta automaticamente a restrição `where: { tenant_id: { _eq: $tenantId } }` em todas as sincronizações de `Pull`.
-3. Inserções locais offline recebem o `tenant_id` automaticamente.
+---
+
+#### 🅰️ Modo Single-Tenant (Padrão)
+
+Ideal para apps pessoais, ferramentas internas com uma única base corporativa ou quando todo o catálogo do Hasura é compartilhado:
+
+- **Banco SQLite**: Usa o arquivo padrão `hasura_local_replica.db`.
+- **Sincronização**: O `Pull` de dados é aberto e consome toda a tabela liberada pelas permissões do Hasura.
+- **Configuração**: Nenhuma configuração extra necessária.
 
 ```dart
 final client = HasuraOfflineFirst(
+  'https://meu-app.hasura.app/v1/graphql',
+  headers: {'x-hasura-admin-secret': 'segredo'},
+  tables: {'produtos', 'tarefas'},
+);
+```
+
+---
+
+#### 🅱️ Modo Multi-Tenant (Segurança e Isolamento por Tenant)
+
+Ideal para SaaS, sistemas multi-empresa, franquias ou qualquer aplicação onde cada cliente deve acessar **apenas os seus próprios dados**:
+
+##### 🛡️ Garantias de Segurança:
+1. **Isolamento Físico de Disco**: Cada tenant possui seu próprio arquivo SQLite independente (`hasura_tenant_<tenantId>.db`). O Tenant A nunca tem dados do Tenant B gravados em seu dispositivo.
+2. **Pull Escopado no Hasura**: O motor de sincronização nunca executa queries abertas; ele injeta automaticamente o filtro `where: { <coluna_tenant>: { _eq: $tenantId } }`.
+3. **Auto-Injeção de Tenant**: Ao criar registros locais offline, a coluna do tenant é preenchida automaticamente antes da persistência e do log de sincronização.
+4. **Troca e Expurgo Seguros**: Permite alternar de organização ou apagar fisicamente o banco do tenant no logout.
+
+##### 📋 Parâmetros da `TenantConfig`:
+| Parâmetro | Tipo | Padrão | Descrição |
+|---|---|---|---|
+| `tenantId` | `String` | *(Obrigatório)* | Identificador único do tenant, organização, filial ou workspace. |
+| `tenantColumn` | `String` | `'tenant_id'` | Nome da coluna correspondente ao tenant nas tabelas do Hasura. |
+| `autoInjectTenantOnInsert` | `bool` | `true` | Se `true`, injeta automaticamente `tenantColumn: tenantId` nos inserts caso omitido. |
+
+##### 💻 Exemplo Prático de Uso Multi-Tenant:
+
+```dart
+import 'package:hasura_offline_first/hasura_offline_first.dart';
+
+// 1. Inicializando o cliente para a empresa 'empresa_alfa'
+final client = HasuraOfflineFirst(
   'https://meu-saas.hasura.app/v1/graphql',
+  headers: {
+    'x-hasura-admin-secret': 'segredo',
+  },
   tenantConfig: const TenantConfig(
     tenantId: 'empresa_alfa',
-    tenantColumn: 'empresa_id', // opcional, padrão 'tenant_id'
+    tenantColumn: 'empresa_id', // customizável (padrão é 'tenant_id')
+    autoInjectTenantOnInsert: true,
+  ),
+  tables: {'pedidos', 'clientes'},
+);
+
+// 2. Inserindo dados offline:
+// O campo 'empresa_id': 'empresa_alfa' será injetado automaticamente!
+final novoPedido = await client.insertLocal('pedidos', {
+  'valor': 250.0,
+  'descricao': 'Licença Anual',
+});
+
+// 3. Consultando dados locais:
+// Apenas registros pertencentes à 'empresa_alfa' são retornados
+final pedidosAlfa = await client.queryLocal('pedidos');
+
+// 4. Alternando de empresa/tenant em tempo de execução (Account Switching):
+// Fecha com segurança a conexão da empresa anterior e abre a nova base SQLite
+await client.switchTenant(
+  const TenantConfig(
+    tenantId: 'empresa_beta',
+    tenantColumn: 'empresa_id',
   ),
 );
 
-// Alternar entre empresas/tenants de forma limpa e segura:
-await client.switchTenant(const TenantConfig(tenantId: 'empresa_beta'));
+// Agora a base ativa é 'hasura_tenant_empresa_beta.db'
+final pedidosBeta = await client.queryLocal('pedidos');
 
-// Expurgo físico de dados locais (útil em logout de usuários sensíveis):
+// 5. Logout Seguro (Expurgo Físico do Banco de Dados):
+// Remove fisicamente o arquivo SQLite correspondente do disco
 await client.clearTenantData('empresa_alfa');
 ```
+
+---
 
 ### 8. Simulação de Modo Offline (Para Testes e Demonstrações)
 
@@ -215,7 +275,7 @@ client.simulateOffline(false);
 final isSimulating = client.isSimulatingOffline;
 ```
 
-### 8. Subscriptions GraphQL em Tempo Real
+### 9. Subscriptions GraphQL em Tempo Real
 
 ```dart
 const subDoc = '''
