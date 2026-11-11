@@ -171,7 +171,39 @@ if (result is Map && result['_offline'] == true) {
 }
 ```
 
-### 7. Simulação de Modo Offline (Para Testes e Demonstrações)
+### 7. Arquitetura Híbrida: Single-Tenant vs Multi-Tenant
+
+O package oferece flexibilidade total para operar tanto em **bases globais únicas** quanto em **arquiteturas multi-empresa (Multi-Tenant)** com isolamento estrito de segurança e conformidade LGPD/GDPR:
+
+#### A. Modo Single-Tenant (Padrão)
+Sem nenhuma configuração adicional, todas as tabelas usam o banco SQLite padrão (`hasura_local_replica.db`) e sincronizam de forma aberta:
+```dart
+final client = HasuraOfflineFirst('https://meu-app.hasura.app/v1/graphql');
+```
+
+#### B. Modo Multi-Tenant (Isolamento por Empresa / Workspace)
+Ao informar `tenantConfig`:
+1. Cada organização ganha um arquivo SQLite dedicado (`hasura_tenant_<tenantId>.db`), impedindo contaminação de dados.
+2. O `SyncEngine` injeta automaticamente a restrição `where: { tenant_id: { _eq: $tenantId } }` em todas as sincronizações de `Pull`.
+3. Inserções locais offline recebem o `tenant_id` automaticamente.
+
+```dart
+final client = HasuraOfflineFirst(
+  'https://meu-saas.hasura.app/v1/graphql',
+  tenantConfig: const TenantConfig(
+    tenantId: 'empresa_alfa',
+    tenantColumn: 'empresa_id', // opcional, padrão 'tenant_id'
+  ),
+);
+
+// Alternar entre empresas/tenants de forma limpa e segura:
+await client.switchTenant(const TenantConfig(tenantId: 'empresa_beta'));
+
+// Expurgo físico de dados locais (útil em logout de usuários sensíveis):
+await client.clearTenantData('empresa_alfa');
+```
+
+### 8. Simulação de Modo Offline (Para Testes e Demonstrações)
 
 ```dart
 // Força o cliente a se comportar como offline instantaneamente:

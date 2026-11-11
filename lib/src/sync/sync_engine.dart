@@ -5,6 +5,7 @@ import 'package:sqflite/sqflite.dart' as sqflite;
 
 import '../contracts/hasura_connect_interface.dart';
 import '../contracts/network_status.dart';
+import '../contracts/tenant_config.dart';
 import '../core/exceptions.dart';
 import '../core/network_manager.dart';
 import '../local_database/database_provider.dart';
@@ -15,7 +16,7 @@ import 'conflict_resolver.dart';
 
 /// Bidirectional synchronization engine with Server Authority conflict resolution.
 class SyncEngine {
-  final DatabaseProvider databaseProvider;
+  DatabaseProvider databaseProvider;
   final LocalTableRepository localRepository;
   final SchemaMigrator schemaMigrator;
   final ConflictResolver conflictResolver;
@@ -24,6 +25,7 @@ class SyncEngine {
   final String url;
   final Map<String, String> Function() headersProvider;
   final Set<String> registeredTables;
+  TenantConfig? tenantConfig;
 
   bool _isSyncing = false;
   bool _hasPendingSync = false;
@@ -42,6 +44,7 @@ class SyncEngine {
     required this.networkManager,
     required this.url,
     required this.headersProvider,
+    this.tenantConfig,
     Set<String>? tables,
   }) : registeredTables = tables ?? {} {
     _init();
@@ -297,9 +300,16 @@ class SyncEngine {
       }
     }
 
+    final bool isMultiTenant = tenantConfig != null;
+    final String queryArgsDef =
+        isMultiTenant ? '(\$tenantId: String!)' : '';
+    final String tableFilter = isMultiTenant
+        ? '(where: { ${tenantConfig!.tenantColumn}: { _eq: \$tenantId } })'
+        : '';
+
     final dynamicQuery = '''
-      query Pull_$table {
-        $table {
+      query Pull_$table$queryArgsDef {
+        $table$tableFilter {
           $fieldsSelection
         }
       }
@@ -308,6 +318,7 @@ class SyncEngine {
     final request = Request(
       url: url,
       document: dynamicQuery,
+      variables: isMultiTenant ? {'tenantId': tenantConfig!.tenantId} : null,
       headers: headersProvider(),
       key: table,
       type: 'query',
@@ -320,10 +331,23 @@ class SyncEngine {
       final remoteIds = remoteRows.map((r) => r['id'].toString()).toSet();
 
       // SERVER AUTHORITY: Delete local rows marked as 'synced' that no longer exist on server
+      String syncedWhere = "__sync_status = 'synced'";
+      final List<dynamic> syncedArgs = [];
+      if (isMultiTenant) {
+        final tableInfo = await db.rawQuery('PRAGMA table_info("$table")');
+        final colNames =
+            tableInfo.map((c) => c['name'].toString().toLowerCase()).toSet();
+        if (colNames.contains(tenantConfig!.tenantColumn.toLowerCase())) {
+          syncedWhere += ' AND "${tenantConfig!.tenantColumn}" = ?';
+          syncedArgs.add(tenantConfig!.tenantId);
+        }
+      }
+
       final localSyncedRows = await db.query(
         table,
         columns: ['id'],
-        where: "__sync_status = 'synced'",
+        where: syncedWhere,
+        whereArgs: syncedArgs.isNotEmpty ? syncedArgs : null,
       );
       for (final localRow in localSyncedRows) {
         final localId = localRow['id'].toString();

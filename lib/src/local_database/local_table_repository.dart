@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:sqflite/sqflite.dart' as sqflite;
 import 'package:uuid/uuid.dart';
+import '../contracts/tenant_config.dart';
 import 'database_provider.dart';
 
 /// Represents a change event in a local SQLite table.
@@ -20,12 +21,16 @@ class TableChangeEvent {
 /// Provides CRUD operations directly against the local SQLite database replica,
 /// handling audit columns and outbox logging automatically.
 class LocalTableRepository {
-  final DatabaseProvider databaseProvider;
+  DatabaseProvider databaseProvider;
+  TenantConfig? tenantConfig;
   final _uuid = const Uuid();
   final StreamController<TableChangeEvent> _tableChangeController =
       StreamController<TableChangeEvent>.broadcast();
 
-  LocalTableRepository({required this.databaseProvider});
+  LocalTableRepository({
+    required this.databaseProvider,
+    this.tenantConfig,
+  });
 
   /// Broadcast stream emitting table change notifications.
   Stream<TableChangeEvent> get onTableChanged => _tableChangeController.stream;
@@ -135,6 +140,24 @@ class LocalTableRepository {
       }
     }
 
+    // Defensive multi-tenant filter: if table has tenant column, enforce tenantId match
+    if (tenantConfig != null) {
+      final tableInfo = await db.rawQuery('PRAGMA table_info("$tableName")');
+      final colNames =
+          tableInfo.map((c) => c['name'].toString().toLowerCase()).toSet();
+      final tenantColLower = tenantConfig!.tenantColumn.toLowerCase();
+
+      if (colNames.contains(tenantColLower)) {
+        final tenantClause = '"${tenantConfig!.tenantColumn}" = ?';
+        if (effectiveWhere.isNotEmpty) {
+          effectiveWhere = '($effectiveWhere) AND ($tenantClause)';
+        } else {
+          effectiveWhere = tenantClause;
+        }
+        effectiveArgs.add(tenantConfig!.tenantId);
+      }
+    }
+
     // Safe orderBy resolution to prevent crashes on non-existent columns
     String? safeOrderBy = orderBy;
     if (safeOrderBy != null) {
@@ -190,6 +213,14 @@ class LocalTableRepository {
 
     final id = row['id']?.toString() ?? _uuid.v4();
     row['id'] = id;
+
+    // Multi-tenant auto-injection
+    if (tenantConfig != null &&
+        tenantConfig!.autoInjectTenantOnInsert &&
+        !row.containsKey(tenantConfig!.tenantColumn)) {
+      row[tenantConfig!.tenantColumn] = tenantConfig!.tenantId;
+    }
+
     row['__sync_status'] = 'pending_insert';
     row['__updated_at'] = DateTime.now().toIso8601String();
     row['__is_deleted'] = 0;
@@ -208,6 +239,11 @@ class LocalTableRepository {
 
       // Log outbox mutation
       final payload = Map<String, dynamic>.from(data)..['id'] = id;
+      if (tenantConfig != null &&
+          tenantConfig!.autoInjectTenantOnInsert &&
+          !payload.containsKey(tenantConfig!.tenantColumn)) {
+        payload[tenantConfig!.tenantColumn] = tenantConfig!.tenantId;
+      }
       await txn.insert('_sync_log', {
         'id': _uuid.v4(),
         'table_name': tableName,

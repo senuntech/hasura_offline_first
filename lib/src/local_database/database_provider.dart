@@ -17,6 +17,40 @@ class DatabaseProvider {
     this.customDatabaseFactory,
   });
 
+  /// Computes the database filename based on optional [tenantConfig].
+  static String resolveDatabaseName(dynamic tenantConfig) {
+    if (tenantConfig == null) {
+      return 'hasura_local_replica.db';
+    }
+    final tenantId = tenantConfig.tenantId.toString().replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+    return 'hasura_tenant_$tenantId.db';
+  }
+
+  /// Resolves the absolute disk path for the database file.
+  Future<String> getDatabasePath() async {
+    try {
+      if (kIsWeb) {
+        return dbName;
+      } else {
+        final docDir = await getApplicationDocumentsDirectory();
+        final dirPath = p.join(docDir.path, 'hasura_db');
+        final dir = Directory(dirPath);
+        if (!await dir.exists()) {
+          await dir.create(recursive: true);
+        }
+        return p.join(dirPath, dbName);
+      }
+    } catch (_) {
+      final tempDir = Directory.systemTemp.path;
+      final fullPath = p.join(tempDir, 'hasura_db', dbName);
+      final dir = Directory(p.dirname(fullPath));
+      if (!dir.existsSync()) {
+        dir.createSync(recursive: true);
+      }
+      return fullPath;
+    }
+  }
+
   /// Returns the active SQLite database instance, initializing it if necessary.
   Future<sqflite.Database> get database {
     if (_database != null && _database!.isOpen) {
@@ -37,28 +71,7 @@ class DatabaseProvider {
       factory = sqflite.databaseFactory;
     }
 
-    String dbPath;
-    try {
-      if (kIsWeb) {
-        dbPath = dbName;
-      } else {
-        final docDir = await getApplicationDocumentsDirectory();
-        final dirPath = p.join(docDir.path, 'hasura_db');
-        final dir = Directory(dirPath);
-        if (!await dir.exists()) {
-          await dir.create(recursive: true);
-        }
-        dbPath = p.join(dirPath, dbName);
-      }
-    } catch (_) {
-      // Fallback for headless test environments
-      final tempDir = Directory.systemTemp.path;
-      dbPath = p.join(tempDir, 'hasura_db', dbName);
-      final dir = Directory(p.dirname(dbPath));
-      if (!dir.existsSync()) {
-        dir.createSync(recursive: true);
-      }
-    }
+    final dbPath = await getDatabasePath();
 
     final db = await factory.openDatabase(
       dbPath,
@@ -118,6 +131,20 @@ class DatabaseProvider {
       await _database!.close();
       _database = null;
       _initFuture = null;
+    }
+  }
+
+  /// Closes and physically deletes the database file from disk.
+  Future<void> deleteDatabaseFile() async {
+    await close();
+    try {
+      final dbPath = await getDatabasePath();
+      final file = File(dbPath);
+      if (await file.exists()) {
+        await file.delete();
+      }
+    } catch (_) {
+      // Ignored if file does not exist or running on web
     }
   }
 }

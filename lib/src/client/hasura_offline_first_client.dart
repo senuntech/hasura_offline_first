@@ -5,6 +5,7 @@ import 'package:uuid/uuid.dart';
 import '../contracts/hasura_connect_interface.dart';
 import '../contracts/network_status.dart';
 import '../contracts/storage_interface.dart';
+import '../contracts/tenant_config.dart';
 import '../core/exceptions.dart';
 import '../core/hash_generator.dart';
 import '../core/network_manager.dart';
@@ -30,7 +31,8 @@ class HasuraOfflineFirst implements IHasuraConnect {
 
   final NetworkManager _networkManager;
   final ILocalStorageDriver _storageDriver;
-  final DatabaseProvider databaseProvider;
+  TenantConfig? _tenantConfig;
+  DatabaseProvider databaseProvider;
   late final LocalTableRepository localRepository;
   late final SchemaMigrator schemaMigrator;
   late final ConflictResolver conflictResolver;
@@ -40,6 +42,9 @@ class HasuraOfflineFirst implements IHasuraConnect {
   late final HasuraWebSocketClient _wsClient;
   final _uuid = const Uuid();
 
+  /// Current active tenant configuration (null for Single-Tenant mode).
+  TenantConfig? get tenantConfig => _tenantConfig;
+
   HasuraOfflineFirst(
     this.url, {
     Map<String, String>? headers,
@@ -48,13 +53,18 @@ class HasuraOfflineFirst implements IHasuraConnect {
     ILocalStorageDriver? storageDriver,
     NetworkManager? networkManager,
     DatabaseProvider? customDatabaseProvider,
+    TenantConfig? tenantConfig,
     http.Client? httpClient,
     Set<String>? tables,
   })  : _headers = headers ?? {},
         _interceptors = [...?interceptors],
         _networkManager = networkManager ?? NetworkManager(),
         _storageDriver = storageDriver ?? FileStorageDriver(),
-        databaseProvider = customDatabaseProvider ?? DatabaseProvider() {
+        _tenantConfig = tenantConfig,
+        databaseProvider = customDatabaseProvider ??
+            DatabaseProvider(
+              dbName: DatabaseProvider.resolveDatabaseName(tenantConfig),
+            ) {
     if (token != null) {
       _interceptors.insert(0, TokenInterceptor(token));
     }
@@ -77,7 +87,10 @@ class HasuraOfflineFirst implements IHasuraConnect {
       headersProvider: () => _headers,
     );
 
-    localRepository = LocalTableRepository(databaseProvider: databaseProvider);
+    localRepository = LocalTableRepository(
+      databaseProvider: databaseProvider,
+      tenantConfig: _tenantConfig,
+    );
 
     schemaMigrator = SchemaMigrator(
       httpClient: _httpClient,
@@ -96,6 +109,7 @@ class HasuraOfflineFirst implements IHasuraConnect {
       networkManager: _networkManager,
       url: url,
       headersProvider: () => _headers,
+      tenantConfig: _tenantConfig,
       tables: tables,
     );
 
@@ -672,6 +686,44 @@ class HasuraOfflineFirst implements IHasuraConnect {
   Future<void> synchronize() async {
     await _syncManager.synchronize();
     await syncEngine.synchronize();
+  }
+
+  /// Switches the active tenant, safely closing the current SQLite database and
+  /// opening the dedicated replica for [newTenant].
+  Future<void> switchTenant(TenantConfig newTenant) async {
+    await databaseProvider.close();
+    _tenantConfig = newTenant;
+    databaseProvider = DatabaseProvider(
+      dbName: DatabaseProvider.resolveDatabaseName(newTenant),
+      customDatabaseFactory: databaseProvider.customDatabaseFactory,
+    );
+    localRepository.databaseProvider = databaseProvider;
+    localRepository.tenantConfig = newTenant;
+    syncEngine.databaseProvider = databaseProvider;
+    syncEngine.tenantConfig = newTenant;
+
+    if (_networkManager.currentStatus == NetworkStatus.online) {
+      await syncEngine.synchronize();
+    }
+  }
+
+  /// Physically deletes the local SQLite database replica for [targetTenantId]
+  /// (or the current tenant if omitted). Useful for secure logouts.
+  Future<void> clearTenantData([String? targetTenantId]) async {
+    final idToClear = targetTenantId ?? _tenantConfig?.tenantId;
+    final configToClear =
+        idToClear != null ? TenantConfig(tenantId: idToClear) : null;
+    final dbName = DatabaseProvider.resolveDatabaseName(configToClear);
+
+    if (dbName == databaseProvider.dbName) {
+      await databaseProvider.deleteDatabaseFile();
+    } else {
+      final tempProvider = DatabaseProvider(
+        dbName: dbName,
+        customDatabaseFactory: databaseProvider.customDatabaseFactory,
+      );
+      await tempProvider.deleteDatabaseFile();
+    }
   }
 
   @override

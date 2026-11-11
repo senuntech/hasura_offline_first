@@ -7,6 +7,7 @@ library hasura_offline_first;
 export 'src/contracts/hasura_connect_interface.dart';
 export 'src/contracts/network_status.dart';
 export 'src/contracts/storage_interface.dart';
+export 'src/contracts/tenant_config.dart';
 
 // Core
 export 'src/core/exceptions.dart';
