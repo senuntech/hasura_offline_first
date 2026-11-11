@@ -90,3 +90,4 @@ class SyncStatusBadge extends StatelessWidget {
     return '$hour:$minute:$second';
   }
 }
+
