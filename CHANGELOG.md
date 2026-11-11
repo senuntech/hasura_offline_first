@@ -9,3 +9,4 @@
 - Reactive `onConnectivityChanged` stream, `isConnected` check, and listener callbacks with unsubscribe support.
 - Simulated offline mode via `simulateOffline(bool)` for automated tests and UI demos.
 - Decoupled `ILocalStorageDriver` interface with `InMemoryStorageDriver` and persistent `FileStorageDriver`.
+
