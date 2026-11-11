@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:http/http.dart' as http;
+import 'package:sqflite/sqflite.dart' as sqflite;
 import 'package:uuid/uuid.dart';
 
 import '../contracts/hasura_connect_interface.dart';
@@ -11,6 +12,7 @@ import '../core/hash_generator.dart';
 import '../core/network_manager.dart';
 import '../interceptors/token_interceptor.dart';
 import '../local_database/database_provider.dart';
+import '../local_database/graphql_query_parser.dart';
 import '../local_database/local_table_repository.dart';
 import '../local_database/schema_migrator.dart';
 import '../network/hasura_http_client.dart';
@@ -19,6 +21,7 @@ import '../storage/file_storage_driver.dart';
 import '../sync/conflict_resolver.dart';
 import '../sync/sync_engine.dart';
 import '../sync/sync_manager.dart';
+import '../sync/sync_status.dart';
 
 /// Local-First & Offline-First GraphQL client compatible with HasuraConnect,
 /// powered by an embedded SQLite database replica, dynamic schema auto-migrations,
@@ -53,6 +56,7 @@ class HasuraOfflineFirst implements IHasuraConnect {
     ILocalStorageDriver? storageDriver,
     NetworkManager? networkManager,
     DatabaseProvider? customDatabaseProvider,
+    sqflite.DatabaseFactory? customDatabaseFactory,
     TenantConfig? tenantConfig,
     http.Client? httpClient,
     Set<String>? tables,
@@ -60,13 +64,58 @@ class HasuraOfflineFirst implements IHasuraConnect {
         _interceptors = [...?interceptors],
         _networkManager = networkManager ?? NetworkManager(),
         _storageDriver = storageDriver ?? FileStorageDriver(),
-        _tenantConfig = tenantConfig,
+        _tenantConfig = tenantConfig ??
+            (headers != null && headers.containsKey('x-hasura-tenant-id')
+                ? TenantConfig(tenantId: headers['x-hasura-tenant-id']!)
+                : null),
         databaseProvider = customDatabaseProvider ??
             DatabaseProvider(
-              dbName: DatabaseProvider.resolveDatabaseName(tenantConfig),
+              dbName: DatabaseProvider.resolveDatabaseName(
+                tenantConfig ??
+                    (headers != null &&
+                            headers.containsKey('x-hasura-tenant-id')
+                        ? TenantConfig(tenantId: headers['x-hasura-tenant-id']!)
+                        : null),
+              ),
+              customDatabaseFactory: customDatabaseFactory,
             ) {
     if (token != null) {
-      _interceptors.insert(0, TokenInterceptor(token));
+      // Auto-detect tenant from initial token if synchronous
+      final initialTokenOrFuture = token();
+      if (initialTokenOrFuture is String) {
+        final autoConfig = TenantConfig.tryFromJwt(initialTokenOrFuture);
+        if (autoConfig != null && _tenantConfig == null) {
+          _tenantConfig = autoConfig;
+          databaseProvider = DatabaseProvider(
+            dbName: DatabaseProvider.resolveDatabaseName(autoConfig),
+            customDatabaseFactory: customDatabaseFactory,
+          );
+        }
+      } else if (initialTokenOrFuture is Future<String?>) {
+        initialTokenOrFuture.then((t) {
+          final autoConfig = TenantConfig.tryFromJwt(t);
+          if (autoConfig != null &&
+              (_tenantConfig == null ||
+                  _tenantConfig!.tenantId != autoConfig.tenantId)) {
+            switchTenant(autoConfig);
+          }
+        }).catchError((_) {});
+      }
+
+      _interceptors.insert(
+        0,
+        TokenInterceptor(
+          token,
+          onTokenResolved: (resolvedToken) {
+            final autoConfig = TenantConfig.tryFromJwt(resolvedToken);
+            if (autoConfig != null &&
+                (_tenantConfig == null ||
+                    _tenantConfig!.tenantId != autoConfig.tenantId)) {
+              switchTenant(autoConfig);
+            }
+          },
+        ),
+      );
     }
 
     _httpClient = HasuraHttpClient(
@@ -142,6 +191,12 @@ class HasuraOfflineFirst implements IHasuraConnect {
 
   /// Stream signaling when bidirectional background sync starts or finishes.
   Stream<bool> get onSyncStateChanged => syncEngine.onSyncStateChanged;
+
+  /// Reactive stream emitting detailed synchronization metrics and states (idle, syncing, synced, error, pendingCount).
+  Stream<SyncStatusSnapshot> get syncStatusStream => syncEngine.syncStatusStream;
+
+  /// Instant snapshot of the current synchronization state and pending mutation count.
+  SyncStatusSnapshot get syncStatus => syncEngine.currentStatus;
 
   /// Stream of mutations synced successfully when back online via Outbox.
   Stream<OutboxItem> get onSyncedItem => _syncManager.onSyncedItem;
@@ -472,12 +527,18 @@ class HasuraOfflineFirst implements IHasuraConnect {
 
     // If table is registered for Local-First replica: read from SQLite!
     if (tableName != null && syncEngine.registeredTables.contains(tableName)) {
-      final orderBy = _extractOrderByFromQuery(document, variables);
-      final limit = _extractLimitFromQuery(document, variables);
-      final offset = _extractOffsetFromQuery(document, variables);
+      final parsedWhere = GraphQLQueryParser.parseWhere(document, variables);
+      final orderBy = _extractOrderByFromQuery(document, variables) ??
+          GraphQLQueryParser.parseOrderBy(document);
+      final limit = _extractLimitFromQuery(document, variables) ??
+          GraphQLQueryParser.parseLimit(document);
+      final offset = _extractOffsetFromQuery(document, variables) ??
+          GraphQLQueryParser.parseOffset(document);
 
       final localRows = await localRepository.query(
         tableName,
+        where: parsedWhere?.clause,
+        whereArgs: parsedWhere?.args,
         orderBy: orderBy,
         limit: limit,
         offset: offset,

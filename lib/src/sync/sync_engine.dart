@@ -13,6 +13,7 @@ import '../local_database/local_table_repository.dart';
 import '../local_database/schema_migrator.dart';
 import '../network/hasura_http_client.dart';
 import 'conflict_resolver.dart';
+import 'sync_status.dart';
 
 /// Bidirectional synchronization engine with Server Authority conflict resolution.
 class SyncEngine {
@@ -31,9 +32,17 @@ class SyncEngine {
   bool _hasPendingSync = false;
   bool _isDisposed = false;
   StreamSubscription<NetworkStatus>? _networkSubscription;
+  StreamSubscription<TableChangeEvent>? _repoSubscription;
 
   final StreamController<bool> _syncStateController =
       StreamController<bool>.broadcast();
+  final StreamController<SyncStatusSnapshot> _statusController =
+      StreamController<SyncStatusSnapshot>.broadcast();
+
+  SyncStatusSnapshot _status = const SyncStatusSnapshot(
+    state: SyncState.idle,
+    pendingCount: 0,
+  );
 
   SyncEngine({
     required this.databaseProvider,
@@ -51,6 +60,8 @@ class SyncEngine {
   }
 
   Stream<bool> get onSyncStateChanged => _syncStateController.stream;
+  Stream<SyncStatusSnapshot> get syncStatusStream => _statusController.stream;
+  SyncStatusSnapshot get currentStatus => _status;
   bool get isSyncing => _isSyncing;
 
   void registerTable(String table) {
@@ -63,6 +74,43 @@ class SyncEngine {
         synchronize();
       }
     });
+
+    _repoSubscription = localRepository.onTableChanged.listen((_) {
+      refreshStatus();
+    });
+
+    scheduleMicrotask(() => refreshStatus());
+  }
+
+  /// Refreshes the pending mutation count and emits an updated [SyncStatusSnapshot].
+  Future<void> refreshStatus({SyncState? state, Object? error}) async {
+    if (_isDisposed) return;
+    try {
+      final db = await databaseProvider.database;
+      final countResult = await db.rawQuery(
+        "SELECT COUNT(*) as count FROM _sync_log WHERE status = 'pending'",
+      );
+      final count = sqflite.Sqflite.firstIntValue(countResult) ?? 0;
+
+      final resolvedState = state ??
+          (_isSyncing
+              ? SyncState.syncing
+              : (_status.state == SyncState.syncing
+                  ? SyncState.idle
+                  : _status.state));
+
+      _status = _status.copyWith(
+        state: resolvedState,
+        pendingCount: count,
+        lastError: error,
+        lastSyncedAt: resolvedState == SyncState.synced
+            ? DateTime.now()
+            : _status.lastSyncedAt,
+      );
+      if (!_statusController.isClosed) {
+        _statusController.add(_status);
+      }
+    } catch (_) {}
   }
 
   /// Triggers a full bidirectional synchronization (Schema Sync -> Push -> Pull).
@@ -78,6 +126,7 @@ class SyncEngine {
     if (!_syncStateController.isClosed) {
       _syncStateController.add(true);
     }
+    await refreshStatus(state: SyncState.syncing);
 
     try {
       final db = await databaseProvider.database;
@@ -96,8 +145,10 @@ class SyncEngine {
         if (networkManager.currentStatus != NetworkStatus.online) break;
         await _pullDeltas(db, table);
       }
+      await refreshStatus(state: SyncState.synced);
     } catch (e) {
       dev.log('Sync error: $e', name: 'SyncEngine', error: e);
+      await refreshStatus(state: SyncState.error, error: e);
     } finally {
       _isSyncing = false;
       if (!_syncStateController.isClosed) {
@@ -414,6 +465,8 @@ class SyncEngine {
   void dispose() {
     _isDisposed = true;
     _networkSubscription?.cancel();
+    _repoSubscription?.cancel();
     _syncStateController.close();
+    _statusController.close();
   }
 }

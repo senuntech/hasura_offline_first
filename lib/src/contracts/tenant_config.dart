@@ -73,6 +73,27 @@ class TenantConfig {
     );
   }
 
+  /// Attempts to extract a [TenantConfig] from a JWT token or header string.
+  /// Returns `null` if the token is not a valid JWT or does not contain the tenant claim.
+  static TenantConfig? tryFromJwt(
+    String? rawToken, {
+    String claimName = 'x-hasura-tenant-id',
+    String tenantColumn = 'tenant_id',
+    bool autoInjectTenantOnInsert = true,
+  }) {
+    if (rawToken == null || rawToken.isEmpty) return null;
+    try {
+      return TenantConfig.fromJwt(
+        rawToken,
+        claimName: claimName,
+        tenantColumn: tenantColumn,
+        autoInjectTenantOnInsert: autoInjectTenantOnInsert,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
   TenantConfig copyWith({
     String? tenantId,
     String? tenantColumn,

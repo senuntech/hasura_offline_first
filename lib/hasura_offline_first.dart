@@ -28,6 +28,7 @@ export 'src/storage/in_memory_storage_driver.dart';
 
 // Local Database (Local-First Engine)
 export 'src/local_database/database_provider.dart';
+export 'src/local_database/graphql_query_parser.dart';
 export 'src/local_database/local_table_repository.dart';
 export 'src/local_database/schema_migrator.dart';
 
@@ -35,6 +36,7 @@ export 'src/local_database/schema_migrator.dart';
 export 'src/sync/conflict_resolver.dart';
 export 'src/sync/sync_engine.dart';
 export 'src/sync/sync_manager.dart';
+export 'src/sync/sync_status.dart';
 
 // Client & Alias
 export 'src/client/hasura_offline_first_client.dart';

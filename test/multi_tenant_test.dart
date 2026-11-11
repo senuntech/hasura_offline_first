@@ -229,5 +229,42 @@ void main() {
       await dbProvider.deleteDatabaseFile();
       client.dispose();
     });
+
+    test('HasuraOfflineFirst automatically detects tenant from token without tenantConfig', () async {
+      final header = base64Url.encode(utf8.encode(jsonEncode({'alg': 'HS256', 'typ': 'JWT'})));
+      final payload = base64Url.encode(utf8.encode(jsonEncode({
+        'https://hasura.io/jwt/claims': {
+          'x-hasura-default-role': 'user',
+          'x-hasura-allowed-roles': ['user'],
+          'x-hasura-tenant-id': 'org_auto_detected',
+        }
+      })));
+      final jwtToken = '$header.$payload.signature';
+
+      final fakeConn = FakeConnectivity()..emit([ConnectivityResult.none]);
+      final netManager = NetworkManager(connectivity: fakeConn);
+
+      // O desenvolvedor NÃO declara tenantConfig, apenas passa a função de token!
+      final client = HasuraOfflineFirst(
+        'https://example.com/graphql',
+        token: () => 'Bearer $jwtToken',
+        networkManager: netManager,
+        customDatabaseFactory: databaseFactoryFfi,
+      );
+
+      // Deve ter detectado automaticamente org_auto_detected
+      expect(client.tenantConfig, isNotNull);
+      expect(client.tenantConfig!.tenantId, equals('org_auto_detected'));
+      expect(client.databaseProvider.dbName, equals('hasura_tenant_org_auto_detected.db'));
+
+      // Inserir registro: deve auto-injetar tenant_id: org_auto_detected
+      await client.insertLocal('tarefas', {'id': 'auto-1', 'task': 'Auto detect'});
+      final rows = await client.queryLocal('tarefas');
+      expect(rows.length, equals(1));
+      expect(rows.first['tenant_id'], equals('org_auto_detected'));
+
+      await client.clearTenantData('org_auto_detected');
+      client.dispose();
+    });
   });
 }

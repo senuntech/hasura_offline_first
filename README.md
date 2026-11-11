@@ -245,29 +245,20 @@ No **Hasura Console (Data -> Tabela -> Permissions)**, a regra de permissão de 
 
 ---
 
-##### ⚡ Extração Automática do Tenant direto do JWT (`TenantConfig.fromJwt`)
+##### ⚡ Detecção 100% Automática do Tenant via Token JWT (Sem Boilerplate)
 
-Em vez de fazer parsing manual do token no seu app, você pode utilizar o construtor `TenantConfig.fromJwt`:
+Se o token JWT retornado pelo seu serviço de autenticação já contém o claim `x-hasura-tenant-id`, **você NÃO precisa declarar o `tenantConfig` manualmente**. O package inspeciona o token e configura todo o isolamento e auto-injeção de forma transparente:
 
 ```dart
-// 1. Seu app obtém o token JWT após o login
-final String jwtToken = await authService.getAccessToken();
-
-// 2. Extrai automaticamente o claim 'x-hasura-tenant-id' do token
-final tenantConfig = TenantConfig.fromJwt(
-  jwtToken,
-  claimName: 'x-hasura-tenant-id', // customizável se usar outro nome
-  tenantColumn: 'tenant_id',       // nome da coluna na tabela Hasura
-);
-
-// 3. Inicializa o cliente com isolamento automático
+// Zero configuração extra: o package descobre o tenant sozinho a partir do JWT!
 final client = HasuraOfflineFirst(
   'https://meu-saas.hasura.app/v1/graphql',
-  token: () => 'Bearer $jwtToken',
-  tenantConfig: tenantConfig,
+  token: () => 'Bearer $jwtToken', // JWT com x-hasura-tenant-id
   tables: {'pedidos', 'produtos'},
 );
 ```
+
+> **Nota**: O parâmetro `tenantConfig` só é necessário caso você utilize nomes de claims customizados (ex: `x-hasura-org-id`), colunas de banco personalizadas (ex: `empresa_id`) ou se desejar forçar um ID sem utilizar JWT.
 
 ---
 
