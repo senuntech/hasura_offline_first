@@ -13,6 +13,53 @@ void main() {
   });
 
   group('Multi-Tenant vs Single-Tenant Architecture Tests', () {
+    test('TenantConfig.fromJwt extracts x-hasura-tenant-id from Hasura JWT claims namespace', () {
+      final header = base64Url.encode(utf8.encode(jsonEncode({'alg': 'HS256', 'typ': 'JWT'})));
+      final payload = base64Url.encode(utf8.encode(jsonEncode({
+        'sub': 'user_123',
+        'https://hasura.io/jwt/claims': {
+          'x-hasura-default-role': 'user',
+          'x-hasura-allowed-roles': ['user'],
+          'x-hasura-user-id': 'user_123',
+          'x-hasura-tenant-id': 'tenant_hasura_xyz',
+        }
+      })));
+      final jwt = 'Bearer $header.$payload.fake_signature';
+
+      final config = TenantConfig.fromJwt(jwt);
+      expect(config.tenantId, equals('tenant_hasura_xyz'));
+      expect(config.tenantColumn, equals('tenant_id'));
+      expect(config.autoInjectTenantOnInsert, isTrue);
+    });
+
+    test('TenantConfig.fromJwt supports custom claim and custom column', () {
+      final header = base64Url.encode(utf8.encode(jsonEncode({'alg': 'HS256', 'typ': 'JWT'})));
+      final payload = base64Url.encode(utf8.encode(jsonEncode({
+        'https://hasura.io/jwt/claims': {
+          'x-hasura-org-id': 'org_custom_999',
+        }
+      })));
+      final jwt = '$header.$payload.fake_signature';
+
+      final config = TenantConfig.fromJwt(
+        jwt,
+        claimName: 'x-hasura-org-id',
+        tenantColumn: 'organization_id',
+      );
+      expect(config.tenantId, equals('org_custom_999'));
+      expect(config.tenantColumn, equals('organization_id'));
+    });
+
+    test('TenantConfig.fromJwt throws FormatException when claim is missing or token is invalid', () {
+      expect(() => TenantConfig.fromJwt('invalid_token'), throwsA(isA<FormatException>()));
+
+      final header = base64Url.encode(utf8.encode(jsonEncode({'alg': 'HS256'})));
+      final payload = base64Url.encode(utf8.encode(jsonEncode({'sub': '123'})));
+      final jwt = '$header.$payload.fake';
+
+      expect(() => TenantConfig.fromJwt(jwt), throwsA(isA<FormatException>()));
+    });
+
     test('Single-Tenant mode uses default database and does not require tenant column', () async {
       final dbProvider = DatabaseProvider(
         dbName: DatabaseProvider.resolveDatabaseName(null),

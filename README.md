@@ -207,6 +207,70 @@ Ideal para SaaS, sistemas multi-empresa, franquias ou qualquer aplicação onde 
 3. **Auto-Injeção de Tenant**: Ao criar registros locais offline, a coluna do tenant é preenchida automaticamente antes da persistência e do log de sincronização.
 4. **Troca e Expurgo Seguros**: Permite alternar de organização ou apagar fisicamente o banco do tenant no logout.
 
+---
+
+##### 🔑 Como o Hasura gerencia Multi-Tenancy com JWT (Hasura Session Variables)
+
+No Hasura, a segurança e o particionamento de dados multi-tenant baseiam-se em **Claims JWT** no namespace oficial `https://hasura.io/jwt/claims`.
+
+Exemplo de payload do token JWT gerado pelo seu backend de autenticação:
+```json
+{
+  "sub": "user_123",
+  "name": "Maria Silva",
+  "https://hasura.io/jwt/claims": {
+    "x-hasura-default-role": "user",
+    "x-hasura-allowed-roles": ["user"],
+    "x-hasura-user-id": "user_123",
+    "x-hasura-tenant-id": "empresa_alfa"
+  }
+}
+```
+
+No **Hasura Console (Data -> Tabela -> Permissions)**, a regra de permissão de Select / Insert / Update / Delete é configurada como:
+```json
+{
+  "tenant_id": {
+    "_eq": "X-Hasura-Tenant-Id"
+  }
+}
+```
+
+###### 🔄 Por que o app cliente precisa do `TenantConfig` no modo Local-First?
+- **Online (Hasura)**: O servidor Hasura valida o JWT e restringe os dados automaticamente.
+- **Offline (Dispositivo)**: Quando o celular ou desktop está **sem internet**, o Hasura não está presente. O `hasura_offline_first` utiliza o `TenantConfig` para:
+  1. Abrir a base SQLite exclusiva da empresa (`hasura_tenant_empresa_alfa.db`).
+  2. Preencher automaticamente `"tenant_id": "empresa_alfa"` nos novos registros criados offline.
+  3. Ao restabelecer a conexão, o Hasura valida que o `tenant_id` da mutação coincide com o `X-Hasura-Tenant-Id` do JWT, aprovando a sincronização com **zero erros de permissão**.
+
+---
+
+##### ⚡ Extração Automática do Tenant direto do JWT (`TenantConfig.fromJwt`)
+
+Em vez de fazer parsing manual do token no seu app, você pode utilizar o construtor `TenantConfig.fromJwt`:
+
+```dart
+// 1. Seu app obtém o token JWT após o login
+final String jwtToken = await authService.getAccessToken();
+
+// 2. Extrai automaticamente o claim 'x-hasura-tenant-id' do token
+final tenantConfig = TenantConfig.fromJwt(
+  jwtToken,
+  claimName: 'x-hasura-tenant-id', // customizável se usar outro nome
+  tenantColumn: 'tenant_id',       // nome da coluna na tabela Hasura
+);
+
+// 3. Inicializa o cliente com isolamento automático
+final client = HasuraOfflineFirst(
+  'https://meu-saas.hasura.app/v1/graphql',
+  token: () => 'Bearer $jwtToken',
+  tenantConfig: tenantConfig,
+  tables: {'pedidos', 'produtos'},
+);
+```
+
+---
+
 ##### 📋 Parâmetros da `TenantConfig`:
 | Parâmetro | Tipo | Padrão | Descrição |
 |---|---|---|---|
