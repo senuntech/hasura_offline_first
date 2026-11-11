@@ -24,11 +24,7 @@ Adicione ao seu `pubspec.yaml`:
 dependencies:
   flutter:
     sdk: flutter
-  hasura_offline_first:
-    path: ../hasura_offline_first # ou via git/pub.dev
-  connectivity_plus: ^7.3.2
-  http: ^1.2.0
-  web_socket_channel: ^3.0.0
+  hasura_offline_first: ^1.0.0
 ```
 
 ---
@@ -137,7 +133,19 @@ if (result is Map && result['_offline'] == true) {
 }
 ```
 
-### 5. Subscriptions GraphQL em Tempo Real
+### 5. Simulação de Modo Offline (Para Testes e Demonstrações)
+
+```dart
+// Força o cliente a se comportar como offline instantaneamente:
+client.simulateOffline(true);
+
+// Volta ao comportamento de rede real e dispara o sync automático:
+client.simulateOffline(false);
+
+final isSimulating = client.isSimulatingOffline;
+```
+
+### 6. Subscriptions GraphQL em Tempo Real
 
 ```dart
 const subDoc = '''
