@@ -79,3 +79,4 @@ class ConflictResolver {
     _conflictController.close();
   }
 }
+
