@@ -24,6 +24,11 @@ class InMemoryStorageDriver implements ILocalStorageDriver {
   }
 
   @override
+  Future<List<String>> getAllCacheKeys() async {
+    return _cache.keys.toList();
+  }
+
+  @override
   Future<void> removeCache(String key) async {
     _cache.remove(key);
   }

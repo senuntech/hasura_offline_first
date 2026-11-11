@@ -96,6 +96,200 @@ class HasuraOfflineFirst implements IHasuraConnect {
     return _networkManager.addListener(callback);
   }
 
+  String? _extractTableFromQuery(String document) {
+    final normalized = document.replaceAll(RegExp(r'#[^\n\r]*'), '');
+    final match =
+        RegExp(r'(?:query[^{]*\{\s*|{\s*)([a-zA-Z0-9_]+)').firstMatch(normalized);
+    return match?.group(1);
+  }
+
+  Map<String, dynamic>? _extractItemData(Map<String, dynamic>? variables) {
+    if (variables == null) return null;
+    if (variables.containsKey('object') && variables['object'] is Map) {
+      return Map<String, dynamic>.from(variables['object'] as Map);
+    }
+    if (variables.containsKey('objects') && variables['objects'] is List) {
+      final list = variables['objects'] as List;
+      if (list.isNotEmpty && list.first is Map) {
+        return Map<String, dynamic>.from(list.first as Map);
+      }
+    }
+    return Map<String, dynamic>.from(variables);
+  }
+
+  Future<void> _applyMutationToLocalCache(
+    String document,
+    Map<String, dynamic>? variables,
+  ) async {
+    try {
+      final insertMatch =
+          RegExp(r'insert_([a-zA-Z0-9_]+?)(?:_one|\b|\()').firstMatch(document);
+      final updateMatch =
+          RegExp(r'update_([a-zA-Z0-9_]+?)(?:_by_pk|\b|\()').firstMatch(document);
+      final deleteMatch =
+          RegExp(r'delete_([a-zA-Z0-9_]+?)(?:_by_pk|\b|\()').firstMatch(document);
+
+      if (insertMatch != null) {
+        final table = insertMatch.group(1)!;
+        final itemData = _extractItemData(variables);
+        if (itemData != null) {
+          await _insertIntoLocalTable(table, itemData);
+        }
+      } else if (updateMatch != null) {
+        final table = updateMatch.group(1)!;
+        final id = variables?['id'] ??
+            variables?['pk_columns']?['id'] ??
+            (variables?['where']?['id']?['_eq']);
+        if (id != null) {
+          final updates = variables?['_set'] is Map
+              ? Map<String, dynamic>.from(variables!['_set'] as Map)
+              : (variables != null
+                  ? Map<String, dynamic>.from(variables)
+                  : <String, dynamic>{});
+          await _updateLocalTable(table, id.toString(), updates);
+        }
+      } else if (deleteMatch != null) {
+        final table = deleteMatch.group(1)!;
+        final id = variables?['id'] ??
+            variables?['pk_columns']?['id'] ??
+            (variables?['where']?['id']?['_eq']);
+        if (id != null) {
+          await _deleteFromLocalTable(table, id.toString());
+        }
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _insertIntoLocalTable(
+    String table,
+    Map<String, dynamic> item,
+  ) async {
+    final tableKey = 'table:$table';
+    final existingTableCache = await _storageDriver.getCache(tableKey);
+    List<dynamic> list = [];
+    if (existingTableCache != null && existingTableCache['list'] is List) {
+      list = List<dynamic>.from(existingTableCache['list'] as List);
+    }
+    if (item.containsKey('id')) {
+      list.removeWhere(
+          (i) => i is Map && i['id']?.toString() == item['id']?.toString());
+    }
+    list.add(item);
+    await _storageDriver.saveCache(tableKey, {'list': list, table: list});
+
+    // Update all matching cached queries
+    final keys = await _storageDriver.getAllCacheKeys();
+    for (final key in keys) {
+      if (key == tableKey) continue;
+      final cacheData = await _storageDriver.getCache(key);
+      if (cacheData != null) {
+        bool updated = false;
+        if (cacheData.containsKey(table) && cacheData[table] is List) {
+          final l = List<dynamic>.from(cacheData[table] as List);
+          if (item.containsKey('id')) {
+            l.removeWhere((i) =>
+                i is Map && i['id']?.toString() == item['id']?.toString());
+          }
+          l.add(item);
+          cacheData[table] = l;
+          updated = true;
+        }
+        if (cacheData.containsKey('list') && cacheData['list'] is List) {
+          final l = List<dynamic>.from(cacheData['list'] as List);
+          if (item.containsKey('id')) {
+            l.removeWhere((i) =>
+                i is Map && i['id']?.toString() == item['id']?.toString());
+          }
+          l.add(item);
+          cacheData['list'] = l;
+          updated = true;
+        }
+        if (updated) {
+          await _storageDriver.saveCache(key, cacheData);
+        }
+      }
+    }
+  }
+
+  Future<void> _updateLocalTable(
+    String table,
+    String id,
+    Map<String, dynamic> updates,
+  ) async {
+    final tableKey = 'table:$table';
+    final existingTableCache = await _storageDriver.getCache(tableKey);
+    if (existingTableCache != null && existingTableCache['list'] is List) {
+      final list = List<dynamic>.from(existingTableCache['list'] as List);
+      for (int i = 0; i < list.length; i++) {
+        if (list[i] is Map && list[i]['id']?.toString() == id) {
+          final merged = Map<String, dynamic>.from(list[i] as Map);
+          merged.addAll(updates);
+          list[i] = merged;
+        }
+      }
+      await _storageDriver.saveCache(tableKey, {'list': list, table: list});
+    }
+
+    final keys = await _storageDriver.getAllCacheKeys();
+    for (final key in keys) {
+      if (key == tableKey) continue;
+      final cacheData = await _storageDriver.getCache(key);
+      if (cacheData != null) {
+        bool updated = false;
+        for (final prop in [table, 'list']) {
+          if (cacheData.containsKey(prop) && cacheData[prop] is List) {
+            final l = List<dynamic>.from(cacheData[prop] as List);
+            for (int i = 0; i < l.length; i++) {
+              if (l[i] is Map && l[i]['id']?.toString() == id) {
+                final merged = Map<String, dynamic>.from(l[i] as Map);
+                merged.addAll(updates);
+                l[i] = merged;
+                updated = true;
+              }
+            }
+            cacheData[prop] = l;
+          }
+        }
+        if (updated) {
+          await _storageDriver.saveCache(key, cacheData);
+        }
+      }
+    }
+  }
+
+  Future<void> _deleteFromLocalTable(String table, String id) async {
+    final tableKey = 'table:$table';
+    final existingTableCache = await _storageDriver.getCache(tableKey);
+    if (existingTableCache != null && existingTableCache['list'] is List) {
+      final list = List<dynamic>.from(existingTableCache['list'] as List);
+      list.removeWhere((i) => i is Map && i['id']?.toString() == id);
+      await _storageDriver.saveCache(tableKey, {'list': list, table: list});
+    }
+
+    final keys = await _storageDriver.getAllCacheKeys();
+    for (final key in keys) {
+      if (key == tableKey) continue;
+      final cacheData = await _storageDriver.getCache(key);
+      if (cacheData != null) {
+        bool updated = false;
+        for (final prop in [table, 'list']) {
+          if (cacheData.containsKey(prop) && cacheData[prop] is List) {
+            final l = List<dynamic>.from(cacheData[prop] as List);
+            final beforeLen = l.length;
+            l.removeWhere((i) => i is Map && i['id']?.toString() == id);
+            if (l.length != beforeLen) {
+              cacheData[prop] = l;
+              updated = true;
+            }
+          }
+        }
+        if (updated) {
+          await _storageDriver.saveCache(key, cacheData);
+        }
+      }
+    }
+  }
+
   @override
   Future<dynamic> query(
     String document, {
@@ -103,6 +297,7 @@ class HasuraOfflineFirst implements IHasuraConnect {
     Map<String, dynamic>? variables,
   }) async {
     final queryHash = HashGenerator.generate(document, variables);
+    final tableName = key ?? _extractTableFromQuery(document);
     final isOnline = await isConnected;
 
     if (isOnline) {
@@ -117,23 +312,50 @@ class HasuraOfflineFirst implements IHasuraConnect {
 
       final data = await _httpClient.execute(request);
 
-      // Save to local cache
+      // Save to local cache by queryHash
       if (data is Map<String, dynamic>) {
         await _storageDriver.saveCache(queryHash, data);
       } else if (data is List) {
         await _storageDriver.saveCache(queryHash, {'list': data});
       }
 
+      // Also index by table name
+      if (tableName != null) {
+        if (data is List) {
+          await _storageDriver.saveCache(
+            'table:$tableName',
+            {'list': data, tableName: data},
+          );
+        } else if (data is Map<String, dynamic> &&
+            data.containsKey(tableName)) {
+          await _storageDriver.saveCache(
+            'table:$tableName',
+            {'list': data[tableName], tableName: data[tableName]},
+          );
+        }
+      }
+
       return data;
     } else {
       // Offline fallback
-      final cached = await _storageDriver.getCache(queryHash);
+      var cached = await _storageDriver.getCache(queryHash);
+
+      // Fallback to table-level cache if queryHash missed
+      if (cached == null && tableName != null) {
+        cached = await _storageDriver.getCache('table:$tableName');
+      }
+
       if (cached != null) {
+        if (key != null) {
+          if (cached.containsKey(key)) {
+            return cached[key];
+          }
+          if (cached.containsKey('list')) {
+            return cached['list'];
+          }
+        }
         if (cached.containsKey('list') && cached.keys.length == 1) {
           return cached['list'];
-        }
-        if (key != null && cached.containsKey(key)) {
-          return cached[key];
         }
         return cached;
       }
@@ -163,7 +385,9 @@ class HasuraOfflineFirst implements IHasuraConnect {
         type: 'mutation',
       );
 
-      return await _httpClient.execute(request);
+      final result = await _httpClient.execute(request);
+      await _applyMutationToLocalCache(document, variables);
+      return result;
     } else {
       // Enqueue to outbox for background synchronization
       final outboxItem = OutboxItem(
@@ -174,6 +398,8 @@ class HasuraOfflineFirst implements IHasuraConnect {
       );
 
       await _storageDriver.enqueueOutbox(outboxItem);
+      // Immediately reflect mutation on local cache so queries see it offline
+      await _applyMutationToLocalCache(document, variables);
 
       return {
         '_offline': true,
@@ -229,4 +455,3 @@ class HasuraOfflineFirst implements IHasuraConnect {
 
 /// Alias for drop-in migration compatibility with `hasura_connect`.
 typedef HasuraConnect = HasuraOfflineFirst;
-

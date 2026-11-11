@@ -114,6 +114,33 @@ void main() {
       final pendingAfter = await storageDriver.getPendingOutbox();
       expect(pendingAfter, isEmpty);
     });
+
+    test('offline mutation updates local cache so next offline query returns added item', () async {
+      // 1. App starts offline
+      fakeConnectivity.emit([ConnectivityResult.none]);
+      await pumpEventQueue();
+
+      const mutationDoc = '''
+        mutation AddTodo(\$id: String, \$task: String) {
+          insert_teste_offilne_one(object: {id: \$id, task: \$task}) { id }
+        }
+      ''';
+
+      // 2. User adds item offline
+      await client.mutation(
+        mutationDoc,
+        variables: {'id': 'uuid-1', 'task': 'Comprar pão'},
+      );
+
+      // 3. User queries offline (simulating app reopen)
+      const queryDoc = 'query GetTodos { teste_offilne { id task } }';
+      final offlineTodos = await client.query(queryDoc, key: 'teste_offilne');
+
+      expect(offlineTodos, isA<List>());
+      expect((offlineTodos as List).length, equals(1));
+      expect(offlineTodos.first['id'], equals('uuid-1'));
+      expect(offlineTodos.first['task'], equals('Comprar pão'));
+    });
   });
 }
 

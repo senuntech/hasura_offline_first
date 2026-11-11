@@ -117,6 +117,7 @@ abstract class ILocalStorageDriver {
 
   Future<void> saveCache(String key, Map<String, dynamic> data);
   Future<Map<String, dynamic>?> getCache(String key);
+  Future<List<String>> getAllCacheKeys();
   Future<void> removeCache(String key);
   Future<void> clearCache();
 

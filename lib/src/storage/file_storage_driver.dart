@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:developer' as dev;
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import '../contracts/storage_interface.dart';
@@ -10,6 +11,7 @@ class FileStorageDriver implements ILocalStorageDriver {
   final Map<String, CacheEntry> _cache = {};
   final List<OutboxItem> _outbox = [];
   bool _initialized = false;
+  Future<void>? _initFuture;
 
   FileStorageDriver({String? basePath}) : customBasePath = basePath;
 
@@ -20,7 +22,12 @@ class FileStorageDriver implements ILocalStorageDriver {
   File get _outboxFile => File('$basePath/hasura_outbox.json');
 
   @override
-  Future<void> init() async {
+  Future<void> init() {
+    if (_initialized) return Future.value();
+    return _initFuture ??= _doInit();
+  }
+
+  Future<void> _doInit() async {
     if (_initialized) return;
 
     if (customBasePath != null) {
@@ -66,8 +73,8 @@ class FileStorageDriver implements ILocalStorageDriver {
           });
         }
       }
-    } catch (_) {
-      // If corrupted, fallback to clean cache
+    } catch (e) {
+      dev.log('Erro ao ler cache do disco: $e', name: 'FileStorageDriver');
       _cache.clear();
     }
   }
@@ -84,23 +91,36 @@ class FileStorageDriver implements ILocalStorageDriver {
           }
         }
       }
-    } catch (_) {
+    } catch (e) {
+      dev.log('Erro ao ler outbox do disco: $e', name: 'FileStorageDriver');
       _outbox.clear();
     }
   }
 
   Future<void> _persistCache() async {
     try {
+      final dir = Directory(basePath);
+      if (!await dir.exists()) {
+        await dir.create(recursive: true);
+      }
       final map = _cache.map((key, value) => MapEntry(key, value.toMap()));
       await _cacheFile.writeAsString(jsonEncode(map), flush: true);
-    } catch (_) {}
+    } catch (e) {
+      dev.log('Erro ao persistir cache no disco: $e', name: 'FileStorageDriver', error: e);
+    }
   }
 
   Future<void> _persistOutbox() async {
     try {
+      final dir = Directory(basePath);
+      if (!await dir.exists()) {
+        await dir.create(recursive: true);
+      }
       final list = _outbox.map((i) => i.toMap()).toList();
       await _outboxFile.writeAsString(jsonEncode(list), flush: true);
-    } catch (_) {}
+    } catch (e) {
+      dev.log('Erro ao persistir outbox no disco: $e', name: 'FileStorageDriver', error: e);
+    }
   }
 
   @override
@@ -119,6 +139,12 @@ class FileStorageDriver implements ILocalStorageDriver {
     await init();
     final entry = _cache[key];
     return entry?.data;
+  }
+
+  @override
+  Future<List<String>> getAllCacheKeys() async {
+    await init();
+    return _cache.keys.toList();
   }
 
   @override
