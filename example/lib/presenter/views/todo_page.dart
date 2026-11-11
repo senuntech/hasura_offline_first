@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../controllers/todo_controller.dart';
 import 'components/connectivity_banner.dart';
+import 'components/sync_status_badge.dart';
 import 'components/todo_tile.dart';
 
 class TodoPage extends StatefulWidget {
@@ -76,6 +77,7 @@ class _TodoPageState extends State<TodoPage> {
         foregroundColor: Colors.white,
         elevation: 0,
         actions: [
+          const SyncStatusBadge(),
           IconButton(
             icon: const Icon(Icons.refresh),
             onPressed: () => controller.fetchTodos(),
