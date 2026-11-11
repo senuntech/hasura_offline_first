@@ -1,11 +1,14 @@
 import 'dart:convert';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hasura_offline_first/hasura_offline_first.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'mocks/fake_connectivity.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   sqfliteFfiInit();
 
   group('Local-First Engine & Database Replica', () {
@@ -94,6 +97,46 @@ void main() {
       expect(pendingLogs.length, equals(1));
       final payload = jsonDecode(pendingLogs.first['payload'] as String);
       expect(payload['check_val'], equals(1));
+    });
+
+    test('query extracts and applies order_by from GraphQL document', () async {
+      await localRepo.insert('teste_offilne', {'id': '1', 'task': 'Banana', 'check_val': 0});
+      await localRepo.insert('teste_offilne', {'id': '2', 'task': 'Abacaxi', 'check_val': 0});
+      await localRepo.insert('teste_offilne', {'id': '3', 'task': 'Cereja', 'check_val': 0});
+
+      final fakeConn = FakeConnectivity()..emit([ConnectivityResult.none]);
+      final client = HasuraOfflineFirst(
+        'https://fake.url',
+        customDatabaseProvider: dbProvider,
+        networkManager: NetworkManager(connectivity: fakeConn),
+        tables: {'teste_offilne'},
+      );
+
+      // Query with order_by task ASC
+      final resAsc = await client.query('''
+        query {
+          teste_offilne(order_by: {task: asc}) {
+            id
+            task
+          }
+        }
+      ''', key: 'teste_offilne') as List;
+
+      expect(resAsc.map((r) => r['task']).toList(), equals(['Abacaxi', 'Banana', 'Cereja']));
+
+      // Query with order_by task DESC
+      final resDesc = await client.query('''
+        query {
+          teste_offilne(order_by: {task: desc}) {
+            id
+            task
+          }
+        }
+      ''', key: 'teste_offilne') as List;
+
+      expect(resDesc.map((r) => r['task']).toList(), equals(['Cereja', 'Banana', 'Abacaxi']));
+
+      client.dispose();
     });
   });
 

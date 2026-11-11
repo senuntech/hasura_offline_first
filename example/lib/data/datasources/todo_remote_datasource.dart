@@ -15,7 +15,7 @@ class TodoRemoteDataSource implements ITodoRemoteDataSource {
 
   static const String _getTodosQuery = '''
     query GetTodos {
-      teste_offilne(order_by: {task: asc}) {
+      teste_offilne(order_by: {created_at: asc}) {
         id
         task
         check

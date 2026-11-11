@@ -217,6 +217,49 @@ class HasuraOfflineFirst implements IHasuraConnect {
     return match?.group(1);
   }
 
+  String? _extractOrderByFromQuery(String document,
+      [Map<String, dynamic>? variables]) {
+    if (variables != null && variables['order_by'] is Map) {
+      final map = variables['order_by'] as Map;
+      if (map.isNotEmpty) {
+        final col = map.keys.first.toString();
+        final dir = map.values.first.toString().toUpperCase();
+        return '"$col" $dir';
+      }
+    }
+
+    final normalized = document.replaceAll(RegExp(r'#[^\n\r]*'), '');
+    final match = RegExp(
+      r'order_by:\s*(?:\[\s*)?\{\s*([a-zA-Z0-9_]+)\s*:\s*(asc|desc)\s*\}',
+      caseSensitive: false,
+    ).firstMatch(normalized);
+
+    if (match != null) {
+      final col = match.group(1)!;
+      final dir = match.group(2)!.toUpperCase();
+      return '"$col" $dir';
+    }
+    return null;
+  }
+
+  int? _extractLimitFromQuery(String document,
+      [Map<String, dynamic>? variables]) {
+    if (variables != null && variables['limit'] is int) {
+      return variables['limit'] as int;
+    }
+    final match = RegExp(r'limit:\s*([0-9]+)').firstMatch(document);
+    return match != null ? int.tryParse(match.group(1)!) : null;
+  }
+
+  int? _extractOffsetFromQuery(String document,
+      [Map<String, dynamic>? variables]) {
+    if (variables != null && variables['offset'] is int) {
+      return variables['offset'] as int;
+    }
+    final match = RegExp(r'offset:\s*([0-9]+)').firstMatch(document);
+    return match != null ? int.tryParse(match.group(1)!) : null;
+  }
+
   Map<String, dynamic>? _extractItemData(Map<String, dynamic>? variables) {
     if (variables == null) return null;
     if (variables.containsKey('object') && variables['object'] is Map) {
@@ -415,7 +458,16 @@ class HasuraOfflineFirst implements IHasuraConnect {
 
     // If table is registered for Local-First replica: read from SQLite!
     if (tableName != null && syncEngine.registeredTables.contains(tableName)) {
-      final localRows = await localRepository.query(tableName);
+      final orderBy = _extractOrderByFromQuery(document, variables);
+      final limit = _extractLimitFromQuery(document, variables);
+      final offset = _extractOffsetFromQuery(document, variables);
+
+      final localRows = await localRepository.query(
+        tableName,
+        orderBy: orderBy,
+        limit: limit,
+        offset: offset,
+      );
       if (key != null) {
         return localRows;
       }

@@ -135,11 +135,37 @@ class LocalTableRepository {
       }
     }
 
+    // Safe orderBy resolution to prevent crashes on non-existent columns
+    String? safeOrderBy = orderBy;
+    if (safeOrderBy != null) {
+      final tableInfo = await db.rawQuery('PRAGMA table_info("$tableName")');
+      final colNames =
+          tableInfo.map((c) => c['name'].toString().toLowerCase()).toSet();
+
+      final colMatch = RegExp(
+              r'''["']?([a-zA-Z0-9_]+)["']?\s*(ASC|DESC)?''',
+              caseSensitive: false)
+          .firstMatch(safeOrderBy);
+      if (colMatch != null) {
+        final col = colMatch.group(1)!.toLowerCase();
+        final dir = colMatch.group(2)?.toUpperCase() ?? 'ASC';
+        if (colNames.contains(col)) {
+          safeOrderBy = '"${colMatch.group(1)}" $dir';
+        } else if ((col == 'created_at' || col == 'updated_at') &&
+            colNames.contains('__updated_at')) {
+          // Fallback to local replica timestamp if table has no native created_at column
+          safeOrderBy = '"__updated_at" $dir';
+        } else {
+          safeOrderBy = null;
+        }
+      }
+    }
+
     final results = await db.query(
       '"$tableName"',
       where: effectiveWhere.isNotEmpty ? effectiveWhere : null,
       whereArgs: effectiveArgs.isNotEmpty ? effectiveArgs : null,
-      orderBy: orderBy,
+      orderBy: safeOrderBy,
       limit: limit,
       offset: offset,
     );
