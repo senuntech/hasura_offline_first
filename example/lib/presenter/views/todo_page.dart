@@ -5,6 +5,7 @@ import '../controllers/todo_controller.dart';
 import 'components/connectivity_banner.dart';
 import 'components/sync_status_badge.dart';
 import 'components/todo_tile.dart';
+import 'todo_realtime_page.dart';
 
 class TodoPage extends StatefulWidget {
   const TodoPage({super.key});
@@ -72,11 +73,32 @@ class _TodoPageState extends State<TodoPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Tarefas (teste_offilne)'),
+        title: const Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '[QUERY] Tarefas (teste_offilne)',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            Text(
+              'Consulta Local-First / Cache',
+              style: TextStyle(fontSize: 11, color: Colors.white70),
+            ),
+          ],
+        ),
         backgroundColor: Colors.teal.shade800,
         foregroundColor: Colors.white,
         elevation: 0,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.bolt, color: Colors.amberAccent),
+            tooltip: 'Ir para Realtime (Subscription)',
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const TodoRealtimePage()),
+              );
+            },
+          ),
           const SyncStatusBadge(),
           IconButton(
             icon: const Icon(Icons.refresh),
