@@ -1,0 +1,27 @@
+name: hasura_offline_first
+description: Offline-first GraphQL client compatible with HasuraConnect, featuring automatic query caching, outbox sync queue for mutations, and connectivity monitoring.
+version: 1.0.0
+homepage: https://github.com/example/hasura_offline_first
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+  flutter: '>=3.3.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  connectivity_plus: ^7.3.2
+  crypto: ^3.0.3
+  http: ^1.2.0
+  path_provider: ^2.1.2
+  provider: ^6.1.2
+  uuid: ^4.4.0
+  web_socket_channel: ^3.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
