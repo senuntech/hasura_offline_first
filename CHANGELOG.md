@@ -1,3 +1,8 @@
+## 1.1.1
+
+- **Realtime Subscription & Optimistic UI Enhancements**: Optimized realtime subscription handling via `graphql-ws` combined with instant 0ms optimistic UI updates (Facebook-style) and intelligent background sync reconciliation to prevent race condition rollbacks or UI flickers.
+- **Example App Dual Navigation**: Added dynamic navigation between offline-first queries (`[QUERY]`) and realtime subscriptions (`[SUBSCRIPTION]`) with interactive reactive sync status badges.
+
 ## 1.1.0
 
 - **Hybrid Multi-Tenant & Single-Tenant Architecture**: Physical SQLite database isolation per tenant (`hasura_tenant_<tenantId>.db`), auto-detection of tenant from JWT claims (`x-hasura-tenant-id`) with zero boilerplate, auto-injection on local mutations, scoped server pull synchronization, runtime tenant switching (`switchTenant`), and secure physical data purging (`clearTenantData`).
