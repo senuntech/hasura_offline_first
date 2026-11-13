@@ -586,13 +586,20 @@ class HasuraOfflineFirst implements IHasuraConnect {
     String? key,
     Map<String, dynamic>? variables,
   }) async {
-    final rawField = key ?? _extractTableFromQuery(document);
+    final rootFields = GraphQLQueryParser.extractRootFields(document);
+    final isMultiRoot = rootFields.length > 1;
+
+    final rawField = key ??
+        (rootFields.isNotEmpty
+            ? rootFields.first
+            : _extractTableFromQuery(document));
     final targetTable = _resolveBaseTable(rawField);
     final isByPk = rawField != null && rawField.endsWith('_by_pk');
     final hasNested = GraphQLQueryParser.hasNestedSelections(document);
 
-    // If table is registered for Local-First replica AND does not require nested relational joins: read from SQLite!
-    if (targetTable != null &&
+    // If single registered table without nested relational joins: read from SQLite!
+    if (!isMultiRoot &&
+        targetTable != null &&
         syncEngine.registeredTables.contains(targetTable) &&
         !hasNested) {
       final parsedWhere = GraphQLQueryParser.parseWhere(document, variables);
@@ -633,7 +640,7 @@ class HasuraOfflineFirst implements IHasuraConnect {
       // If local SQLite is empty and online, fall through to fetch from Hasura (e.g. first boot before sync completes)
     }
 
-    // Classic GraphQL query cache pipeline
+    // Classic GraphQL query cache pipeline (handles multi-root and nested relational queries)
     final queryHash = HashGenerator.generate(document, variables);
     final isOnline = await isConnected;
 
@@ -691,6 +698,21 @@ class HasuraOfflineFirst implements IHasuraConnect {
           return cached['list'];
         }
         return cached;
+      }
+
+      // If offline and multi-root query with no cache, attempt best-effort local table resolution
+      if (isMultiRoot) {
+        final Map<String, dynamic> combined = {};
+        for (final field in rootFields) {
+          final base = _resolveBaseTable(field);
+          if (base != null && syncEngine.registeredTables.contains(base)) {
+            final localRows = await localRepository.query(base);
+            combined[field] = localRows;
+          }
+        }
+        if (combined.isNotEmpty) {
+          return combined;
+        }
       }
 
       throw HasuraCacheMissException(

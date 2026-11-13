@@ -208,6 +208,52 @@ class GraphQLQueryParser {
     return false;
   }
 
+  /// Extracts all top-level root field names from a GraphQL document.
+  /// For instance: `query { user_enterprise { ... } project { ... } }` returns `['user_enterprise', 'project']`.
+  static List<String> extractRootFields(String document) {
+    final cleanDoc = document.replaceAll(RegExp(r'#[^\n\r]*'), '');
+    final firstBrace = cleanDoc.indexOf('{');
+    if (firstBrace == -1) return [];
+
+    final List<String> fields = [];
+    int parenDepth = 0;
+    int braceDepth = 0;
+    int currentFieldStart = -1;
+
+    for (int i = firstBrace; i < cleanDoc.length; i++) {
+      final char = cleanDoc[i];
+      if (char == '(') {
+        parenDepth++;
+      } else if (char == ')') {
+        if (parenDepth > 0) parenDepth--;
+      } else if (parenDepth == 0) {
+        if (char == '{') {
+          braceDepth++;
+          if (braceDepth == 2) {
+            if (currentFieldStart != -1 && currentFieldStart < i) {
+              final prefix = cleanDoc.substring(currentFieldStart, i).trim();
+              final fieldNameMatch =
+                  RegExp(r'([a-zA-Z0-9_]+)').firstMatch(prefix);
+              if (fieldNameMatch != null) {
+                fields.add(fieldNameMatch.group(1)!);
+              }
+            }
+          }
+        } else if (char == '}') {
+          braceDepth--;
+          if (braceDepth == 1) {
+            currentFieldStart = -1;
+          }
+        } else if (braceDepth == 1 &&
+            currentFieldStart == -1 &&
+            !RegExp(r'\s').hasMatch(char)) {
+          currentFieldStart = i;
+        }
+      }
+    }
+    return fields;
+  }
+
   static dynamic _normalizeSqliteValue(dynamic value) {
     if (value is bool) {
       return value ? 1 : 0;

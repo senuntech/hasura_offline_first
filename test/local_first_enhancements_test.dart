@@ -272,5 +272,72 @@ void main() {
       await dbProvider.deleteDatabaseFile();
       client.dispose();
     });
+
+    test('query with multiple root fields extracts all fields and executes correctly', () async {
+      const multiDoc = '''
+        query GetProjectsForUser(\$id_enterprise: uuid!, \$id_user: uuid!) {
+          user_enterprise(where: {id_enterprise: {_eq: \$id_enterprise}, id_user: {_eq: \$id_user}}) {
+            id_root
+            id_project
+          }
+          project(where: {id_enterprise: {_eq: \$id_enterprise}}, order_by: {created_at: desc}) {
+            id
+            name
+          }
+        }
+      ''';
+
+      final roots = GraphQLQueryParser.extractRootFields(multiDoc);
+      expect(roots, equals(['user_enterprise', 'project']));
+
+      final fakeConn = FakeConnectivity()..emit([ConnectivityResult.wifi]);
+      final netManager = NetworkManager(connectivity: fakeConn);
+      final dbProvider = DatabaseProvider(
+        dbName: 'test_multi_root_${DateTime.now().microsecondsSinceEpoch}.db',
+        customDatabaseFactory: databaseFactoryFfi,
+      );
+
+      final mockHttp = MockClient((request) async {
+        return http.Response(
+          jsonEncode({
+            'data': {
+              'user_enterprise': [
+                {'id_root': true, 'id_project': null}
+              ],
+              'project': [
+                {'id': 'proj-1', 'name': 'Edifício Horizonte'}
+              ],
+            }
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      });
+
+      final client = HasuraOfflineFirst(
+        'https://example.com/graphql',
+        networkManager: netManager,
+        customDatabaseProvider: dbProvider,
+        httpClient: mockHttp,
+        tables: {'user_enterprise', 'project'},
+      );
+
+      final result = await client.query(
+        multiDoc,
+        variables: {
+          'id_enterprise': 'ent-1',
+          'id_user': 'user-1',
+        },
+      );
+
+      expect(result, isNotNull);
+      expect(result['user_enterprise'], isA<List>());
+      expect((result['user_enterprise'] as List).first['id_root'], isTrue);
+      expect(result['project'], isA<List>());
+      expect((result['project'] as List).first['name'], equals('Edifício Horizonte'));
+
+      await dbProvider.deleteDatabaseFile();
+      client.dispose();
+    });
   });
 }
