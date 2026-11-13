@@ -181,10 +181,10 @@ class SyncEngine {
 
       try {
         if (operation == 'insert') {
-          await _pushInsert(table, payload);
+          await _pushInsert(db, table, payload);
           await _markLogSynced(db, logId, table, rowId);
         } else if (operation == 'update') {
-          final success = await _pushUpdate(table, rowId, payload);
+          final success = await _pushUpdate(db, table, rowId, payload);
           if (success) {
             await _markLogSynced(db, logId, table, rowId);
           } else {
@@ -231,9 +231,51 @@ class SyncEngine {
     }
   }
 
-  Future<void> _pushInsert(String table, Map<String, dynamic> payload) async {
-    final cleanPayload = Map<String, dynamic>.from(payload)
+  Future<Map<String, dynamic>> _restoreGraphQLTypes(
+    sqflite.Database db,
+    String table,
+    Map<String, dynamic> payload,
+  ) async {
+    final clean = Map<String, dynamic>.from(payload)
       ..removeWhere((k, _) => k.startsWith('__'));
+
+    try {
+      final meta = await db.query(
+        '_schema_metadata',
+        columns: ['columns_json'],
+        where: 'table_name = ?',
+        whereArgs: [table],
+      );
+      if (meta.isNotEmpty && meta.first['columns_json'] != null) {
+        final List<dynamic> cols =
+            jsonDecode(meta.first['columns_json'] as String);
+        final Set<String> boolCols = {};
+        for (final c in cols) {
+          if (c is Map && c['type']?.toString().toLowerCase() == 'boolean') {
+            final colName = c['name']?.toString();
+            if (colName != null) boolCols.add(colName.toLowerCase());
+          }
+        }
+        for (final key in clean.keys.toList()) {
+          if (boolCols.contains(key.toLowerCase())) {
+            final v = clean[key];
+            if (v != null) {
+              clean[key] = v == 1 || v == true || v == '1' || v == 'true';
+            }
+          }
+        }
+      }
+    } catch (_) {}
+
+    return clean;
+  }
+
+  Future<void> _pushInsert(
+    sqflite.Database db,
+    String table,
+    Map<String, dynamic> payload,
+  ) async {
+    final cleanPayload = await _restoreGraphQLTypes(db, table, payload);
 
     final mutationDoc = '''
       mutation PushInsert_$table(\$object: ${table}_insert_input!) {
@@ -255,12 +297,13 @@ class SyncEngine {
   }
 
   Future<bool> _pushUpdate(
+    sqflite.Database db,
     String table,
     String id,
     Map<String, dynamic> payload,
   ) async {
-    final cleanPayload = Map<String, dynamic>.from(payload)
-      ..removeWhere((k, _) => k.startsWith('__') || k == 'id');
+    final cleanPayload = await _restoreGraphQLTypes(db, table, payload)
+      ..remove('id');
 
     final mutationDoc = '''
       mutation PushUpdate_$table(\$id: uuid!, \$set: ${table}_set_input!) {

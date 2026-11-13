@@ -218,5 +218,59 @@ void main() {
       await dbProvider.deleteDatabaseFile();
       client.dispose();
     });
+
+    test('mutation extracts correct table name even when operation declares _insert_input in header', () async {
+      final fakeConn = FakeConnectivity()..emit([ConnectivityResult.none]);
+      final netManager = NetworkManager(connectivity: fakeConn);
+      final dbProvider = DatabaseProvider(
+        dbName: 'test_insert_input_header_${DateTime.now().microsecondsSinceEpoch}.db',
+        customDatabaseFactory: databaseFactoryFfi,
+      );
+
+      final client = HasuraOfflineFirst(
+        'https://example.com/graphql',
+        networkManager: netManager,
+        customDatabaseProvider: dbProvider,
+        tables: {'access_profile'},
+      );
+
+      const doc = r'''
+        mutation CreateAccessProfile($object: access_profile_insert_input!) {
+          insert_access_profile_one(object: $object) {
+            id
+            description
+            edit_enterprise
+            signature
+            id_enterprise
+          }
+        }
+      ''';
+
+      final result = await client.mutation(
+        doc,
+        variables: {
+          'object': {
+            'description': 'Engenheiro',
+            'edit_enterprise': true,
+            'signature': false,
+            'id_enterprise': 'ent-1',
+          }
+        },
+      );
+
+      expect(result, isNotNull);
+      final inserted = result['insert_access_profile_one'] as Map<String, dynamic>?;
+      expect(inserted, isNotNull);
+      expect(inserted!['id'], isNotEmpty);
+      expect(inserted['description'], equals('Engenheiro'));
+      expect(inserted['id_enterprise'], equals('ent-1'));
+
+      final localRows = await client.localRepository.query('access_profile');
+      expect(localRows.length, equals(1));
+      expect(localRows.first['description'], equals('Engenheiro'));
+
+      await dbProvider.deleteDatabaseFile();
+      client.dispose();
+    });
   });
 }

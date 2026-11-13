@@ -407,12 +407,16 @@ class HasuraOfflineFirst implements IHasuraConnect {
     Map<String, dynamic>? variables,
   ) async {
     try {
-      final insertMatch =
-          RegExp(r'insert_([a-zA-Z0-9_]+?)(?:_one|\b|\()').firstMatch(document);
-      final updateMatch = RegExp(r'update_([a-zA-Z0-9_]+?)(?:_by_pk|\b|\()')
-          .firstMatch(document);
-      final deleteMatch = RegExp(r'delete_([a-zA-Z0-9_]+?)(?:_by_pk|\b|\()')
-          .firstMatch(document);
+      final firstBrace = document.indexOf('{');
+      final selectionBody =
+          firstBrace != -1 ? document.substring(firstBrace + 1) : document;
+
+      final insertMatch = RegExp(r'\binsert_([a-zA-Z0-9_]+?)(?:_one|\b|\()')
+          .firstMatch(selectionBody);
+      final updateMatch = RegExp(r'\bupdate_([a-zA-Z0-9_]+?)(?:_by_pk|\b|\()')
+          .firstMatch(selectionBody);
+      final deleteMatch = RegExp(r'\bdelete_([a-zA-Z0-9_]+?)(?:_by_pk|\b|\()')
+          .firstMatch(selectionBody);
 
       if (insertMatch != null) {
         final table = insertMatch.group(1)!;
@@ -705,12 +709,16 @@ class HasuraOfflineFirst implements IHasuraConnect {
     String? key,
     Map<String, dynamic>? variables,
   }) async {
-    final insertMatch =
-        RegExp(r'insert_([a-zA-Z0-9_]+?)(?:_one|\b|\()').firstMatch(document);
-    final updateMatch =
-        RegExp(r'update_([a-zA-Z0-9_]+?)(?:_by_pk|\b|\()').firstMatch(document);
-    final deleteMatch =
-        RegExp(r'delete_([a-zA-Z0-9_]+?)(?:_by_pk|\b|\()').firstMatch(document);
+    final firstBrace = document.indexOf('{');
+    final selectionBody =
+        firstBrace != -1 ? document.substring(firstBrace + 1) : document;
+
+    final insertMatch = RegExp(r'\binsert_([a-zA-Z0-9_]+?)(?:_one|\b|\()')
+        .firstMatch(selectionBody);
+    final updateMatch = RegExp(r'\bupdate_([a-zA-Z0-9_]+?)(?:_by_pk|\b|\()')
+        .firstMatch(selectionBody);
+    final deleteMatch = RegExp(r'\bdelete_([a-zA-Z0-9_]+?)(?:_by_pk|\b|\()')
+        .firstMatch(selectionBody);
 
     final targetTable =
         insertMatch?.group(1) ?? updateMatch?.group(1) ?? deleteMatch?.group(1);

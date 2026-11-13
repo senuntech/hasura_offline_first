@@ -287,7 +287,9 @@ class LocalTableRepository {
     });
 
     notifyChange(tableName, 'insert', id);
-    return row;
+    final cleanReturn = Map<String, dynamic>.from(row)
+      ..removeWhere((k, _) => k.startsWith('__'));
+    return cleanReturn;
   }
 
   /// Updates an existing record in the local SQLite table and enqueues an outbox sync log.
