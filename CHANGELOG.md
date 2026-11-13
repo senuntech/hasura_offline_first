@@ -1,3 +1,13 @@
+## 1.3.0
+
+- **Multi-Root GraphQL Queries Support**: Native support for executing and querying multiple independent root fields in a single GraphQL document (`GraphQLQueryParser.extractRootFields`) in Local-First mode without omission or truncation of nodes.
+- **Relational Joins & Nested Selections AST Detection**: Intelligent AST detection for nested relations (`hasNestedSelections`) with automatic, graceful fallback to remote execution / deterministic cache when queries request relational 1:N or N:M joins not represented in the local flat SQLite tables.
+- **Atomic Batch Pull Synchronization**: High-performance optimization in `SyncEngine._pullDeltas` using atomic `db.batch()` operations to persist incoming delta rows, drastically reducing SQLite thread contention, eliminating frame drops, and accelerating application startup/splash times.
+- **Resilient Mutation Extraction**: Robust extraction of mutation operations and table targets by parsing past GraphQL operation parameter headers (e.g. ignoring `$object: table_insert_input!`).
+- **Complete Entity Recovery on `update_by_pk`**: Local mutations using `update_by_pk` now automatically preserve and merge pre-existing record attributes with the updated columns in the returned payload.
+- **Automatic SQLite INTEGER to GraphQL Boolean Normalization**: Transparent conversion of columns mapped as `Boolean` (stored as `0`/`1` in SQLite) to native `bool` (`false`/`true`) in `LocalTableRepository.query()`, alongside boolean normalization during upstream push synchronization.
+- **Configurable HTTP Request Timeout**: Added optional `httpTimeout` parameter (default: 15 seconds) in `HasuraHttpClient` with graceful `TimeoutException` handling to prevent network thread lockups during poor connectivity.
+
 ## 1.2.0
 
 - **Local-First Realtime Subscriptions (`HybridSnapshot`)**: Seamless hybrid subscription returning instant local SQLite data at 0ms latency even while completely offline. Automatically reacts to offline local mutations via `localRepository.onTableChanged`.
