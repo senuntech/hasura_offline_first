@@ -8,10 +8,12 @@ import '../core/exceptions.dart';
 class HasuraHttpClient {
   final http.Client _client;
   final List<Interceptor> interceptors;
+  final Duration timeout;
 
   HasuraHttpClient({
     http.Client? client,
     List<Interceptor>? interceptors,
+    this.timeout = const Duration(seconds: 15),
   })  : _client = client ?? http.Client(),
         interceptors = interceptors ?? [];
 
@@ -38,11 +40,13 @@ class HasuraHttpClient {
           'variables': currentRequest.variables,
       });
 
-      final httpResponse = await _client.post(
-        Uri.parse(currentRequest.url),
-        headers: headers,
-        body: body,
-      );
+      final httpResponse = await _client
+          .post(
+            Uri.parse(currentRequest.url),
+            headers: headers,
+            body: body,
+          )
+          .timeout(timeout);
 
       dynamic decodedBody;
       try {

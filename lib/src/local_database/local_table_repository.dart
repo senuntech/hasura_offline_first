@@ -192,15 +192,45 @@ class LocalTableRepository {
       offset: offset,
     );
 
-    if (stripControlColumns) {
-      return results.map((row) {
-        final clean = Map<String, dynamic>.from(row);
-        clean.removeWhere((key, _) => key.startsWith('__'));
-        return clean;
-      }).toList();
-    }
+    // Read boolean columns from _schema_metadata to convert SQLite INTEGER to GraphQL boolean
+    final Set<String> booleanCols = {};
+    try {
+      final meta = await db.query(
+        '_schema_metadata',
+        columns: ['columns_json'],
+        where: 'table_name = ?',
+        whereArgs: [tableName],
+      );
+      if (meta.isNotEmpty && meta.first['columns_json'] != null) {
+        final List<dynamic> cols =
+            jsonDecode(meta.first['columns_json'] as String);
+        for (final c in cols) {
+          if (c is Map && c['type']?.toString().toLowerCase() == 'boolean') {
+            final colName = c['name']?.toString();
+            if (colName != null) booleanCols.add(colName.toLowerCase());
+          }
+        }
+      }
+    } catch (_) {}
 
-    return results.map((r) => Map<String, dynamic>.from(r)).toList();
+    return results.map((row) {
+      final clean = Map<String, dynamic>.from(row);
+      if (stripControlColumns) {
+        clean.removeWhere((key, _) => key.startsWith('__'));
+      }
+      if (booleanCols.isNotEmpty) {
+        for (final entry in clean.entries.toList()) {
+          if (booleanCols.contains(entry.key.toLowerCase())) {
+            final val = entry.value;
+            if (val != null) {
+              clean[entry.key] =
+                  val == 1 || val == true || val == '1' || val == 'true';
+            }
+          }
+        }
+      }
+      return clean;
+    }).toList();
   }
 
   /// Inserts a new record into the local SQLite table and enqueues an outbox sync log.

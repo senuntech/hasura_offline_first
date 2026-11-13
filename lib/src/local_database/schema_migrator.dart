@@ -78,6 +78,8 @@ class SchemaMigrator {
           if (f is Map) {
             final name = f['name']?.toString();
             if (name == null || name.startsWith('__')) continue;
+            // Only include scalar fields (exclude GraphQL object and list relations)
+            if (!_isScalarType(f['type'])) continue;
             final typeName = _resolveTypeName(f['type']);
             result.add({'name': name, 'type': typeName});
           }
@@ -85,6 +87,16 @@ class SchemaMigrator {
       }
     }
     return result;
+  }
+
+  bool _isScalarType(dynamic type) {
+    if (type is! Map) return false;
+    final kind = type['kind']?.toString().toUpperCase();
+    if (kind == 'SCALAR') return true;
+    if (kind == 'NON_NULL' && type['ofType'] != null) {
+      return _isScalarType(type['ofType']);
+    }
+    return false;
   }
 
   String _resolveTypeName(dynamic type) {
@@ -182,7 +194,12 @@ class SchemaMigrator {
     final activeColNames =
         finalCols.map((c) => c['name'].toString().toLowerCase()).toSet();
 
-    for (final col in ['tenant_id', 'created_at', 'updated_at', '__sync_status']) {
+    for (final col in [
+      'tenant_id',
+      'created_at',
+      'updated_at',
+      '__sync_status'
+    ]) {
       if (activeColNames.contains(col)) {
         try {
           await db.execute(

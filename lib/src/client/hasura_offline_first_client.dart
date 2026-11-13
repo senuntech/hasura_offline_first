@@ -194,7 +194,8 @@ class HasuraOfflineFirst implements IHasuraConnect {
   Stream<bool> get onSyncStateChanged => syncEngine.onSyncStateChanged;
 
   /// Reactive stream emitting detailed synchronization metrics and states (idle, syncing, synced, error, pendingCount).
-  Stream<SyncStatusSnapshot> get syncStatusStream => syncEngine.syncStatusStream;
+  Stream<SyncStatusSnapshot> get syncStatusStream =>
+      syncEngine.syncStatusStream;
 
   /// Instant snapshot of the current synchronization state and pending mutation count.
   SyncStatusSnapshot get syncStatus => syncEngine.currentStatus;
@@ -287,6 +288,19 @@ class HasuraOfflineFirst implements IHasuraConnect {
     return match?.group(1);
   }
 
+  String? _resolveBaseTable(String? queryField) {
+    if (queryField == null) return null;
+    if (syncEngine.registeredTables.contains(queryField)) {
+      return queryField;
+    }
+    final stripped =
+        queryField.replaceFirst(RegExp(r'_(?:by_pk|aggregate)$'), '');
+    if (syncEngine.registeredTables.contains(stripped)) {
+      return stripped;
+    }
+    return queryField;
+  }
+
   String? _extractOrderByFromQuery(String document,
       [Map<String, dynamic>? variables]) {
     if (variables != null && variables['order_by'] is Map) {
@@ -342,6 +356,50 @@ class HasuraOfflineFirst implements IHasuraConnect {
       }
     }
     return Map<String, dynamic>.from(variables);
+  }
+
+  Map<String, dynamic> _extractUpdates(
+    String document,
+    Map<String, dynamic>? variables,
+  ) {
+    if (variables != null && variables['_set'] is Map) {
+      return Map<String, dynamic>.from(variables['_set'] as Map);
+    }
+    if (variables != null && variables['changes'] is Map) {
+      return Map<String, dynamic>.from(variables['changes'] as Map);
+    }
+
+    // Try parsing inline _set block from document: _set: { column: $variable, ... }
+    final setMatch = RegExp(r'_set\s*:\s*\{([^}]+)\}').firstMatch(document);
+    if (setMatch != null) {
+      final content = setMatch.group(1)!;
+      final pairRegex = RegExp(r'([a-zA-Z0-9_]+)\s*:\s*([^,\s\}]+)');
+      final updates = <String, dynamic>{};
+      for (final m in pairRegex.allMatches(content)) {
+        final col = m.group(1)!.trim();
+        final rawVal = m.group(2)!.trim();
+        if (rawVal.startsWith(r'$')) {
+          final varName = rawVal.substring(1);
+          if (variables != null && variables.containsKey(varName)) {
+            updates[col] = variables[varName];
+          }
+        } else {
+          updates[col] = rawVal.replaceAll('"', '').replaceAll("'", '');
+        }
+      }
+      if (updates.isNotEmpty) {
+        return updates;
+      }
+    }
+
+    if (variables != null) {
+      final clean = Map<String, dynamic>.from(variables)
+        ..remove('id')
+        ..remove('pk_columns')
+        ..remove('where');
+      return clean;
+    }
+    return {};
   }
 
   Future<void> _applyMutationToLocalCache(
@@ -524,10 +582,15 @@ class HasuraOfflineFirst implements IHasuraConnect {
     String? key,
     Map<String, dynamic>? variables,
   }) async {
-    final tableName = key ?? _extractTableFromQuery(document);
+    final rawField = key ?? _extractTableFromQuery(document);
+    final targetTable = _resolveBaseTable(rawField);
+    final isByPk = rawField != null && rawField.endsWith('_by_pk');
+    final hasNested = GraphQLQueryParser.hasNestedSelections(document);
 
-    // If table is registered for Local-First replica: read from SQLite!
-    if (tableName != null && syncEngine.registeredTables.contains(tableName)) {
+    // If table is registered for Local-First replica AND does not require nested relational joins: read from SQLite!
+    if (targetTable != null &&
+        syncEngine.registeredTables.contains(targetTable) &&
+        !hasNested) {
       final parsedWhere = GraphQLQueryParser.parseWhere(document, variables);
       final orderBy = _extractOrderByFromQuery(document, variables) ??
           GraphQLQueryParser.parseOrderBy(document);
@@ -537,17 +600,33 @@ class HasuraOfflineFirst implements IHasuraConnect {
           GraphQLQueryParser.parseOffset(document);
 
       final localRows = await localRepository.query(
-        tableName,
+        targetTable,
         where: parsedWhere?.clause,
         whereArgs: parsedWhere?.args,
         orderBy: orderBy,
         limit: limit,
         offset: offset,
       );
-      if (key != null) {
-        return localRows;
+
+      // If local SQLite already has data, return it immediately with 0ms latency!
+      if (localRows.isNotEmpty) {
+        if (key != null) {
+          return localRows;
+        }
+        if (isByPk) {
+          return {rawField: localRows.first};
+        }
+        return {rawField ?? targetTable: localRows};
       }
-      return {tableName: localRows};
+
+      // If local SQLite is empty but offline, return empty result gracefully
+      final isOnline = await isConnected;
+      if (!isOnline) {
+        if (key != null) return [];
+        if (isByPk) return {rawField: null};
+        return {rawField ?? targetTable: []};
+      }
+      // If local SQLite is empty and online, fall through to fetch from Hasura (e.g. first boot before sync completes)
     }
 
     // Classic GraphQL query cache pipeline
@@ -572,17 +651,17 @@ class HasuraOfflineFirst implements IHasuraConnect {
         await _storageDriver.saveCache(queryHash, {'list': data});
       }
 
-      if (tableName != null) {
+      if (targetTable != null) {
         if (data is List) {
           await _storageDriver.saveCache(
-            'table:$tableName',
-            {'list': data, tableName: data},
+            'table:$targetTable',
+            {'list': data, targetTable: data},
           );
         } else if (data is Map<String, dynamic> &&
-            data.containsKey(tableName)) {
+            data.containsKey(targetTable)) {
           await _storageDriver.saveCache(
-            'table:$tableName',
-            {'list': data[tableName], tableName: data[tableName]},
+            'table:$targetTable',
+            {'list': data[targetTable], targetTable: data[targetTable]},
           );
         }
       }
@@ -591,8 +670,8 @@ class HasuraOfflineFirst implements IHasuraConnect {
     } else {
       var cached = await _storageDriver.getCache(queryHash);
 
-      if (cached == null && tableName != null) {
-        cached = await _storageDriver.getCache('table:$tableName');
+      if (cached == null && targetTable != null) {
+        cached = await _storageDriver.getCache('table:$targetTable');
       }
 
       if (cached != null) {
@@ -652,14 +731,21 @@ class HasuraOfflineFirst implements IHasuraConnect {
                 variables?['where']?['id']?['_eq'])
             ?.toString();
         if (id != null) {
-          final updates = variables?['_set'] is Map
-              ? Map<String, dynamic>.from(variables!['_set'] as Map)
-              : (variables != null
-                  ? Map<String, dynamic>.from(variables)
-                  : <String, dynamic>{});
+          final updates = _extractUpdates(document, variables);
           await updateLocal(targetTable, id, updates);
+
+          // Query the full local row so that callers get back complete entity attributes
+          final updatedRows = await localRepository.query(
+            targetTable,
+            where: '"id" = ?',
+            whereArgs: [id],
+          );
+          final fullRow = updatedRows.isNotEmpty
+              ? updatedRows.first
+              : {'id': id, ...updates};
+
           return {
-            'update_${targetTable}_by_pk': {'id': id, ...updates},
+            'update_${targetTable}_by_pk': fullRow,
             '_local': true,
           };
         }
@@ -741,7 +827,8 @@ class HasuraOfflineFirst implements IHasuraConnect {
         localRepository: localRepository,
         networkManager: _networkManager,
         queryLocal: () async {
-          final parsedWhere = GraphQLQueryParser.parseWhere(document, variables);
+          final parsedWhere =
+              GraphQLQueryParser.parseWhere(document, variables);
           final orderBy = _extractOrderByFromQuery(document, variables) ??
               GraphQLQueryParser.parseOrderBy(document);
           final limit = _extractLimitFromQuery(document, variables) ??

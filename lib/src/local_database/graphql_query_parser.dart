@@ -8,6 +8,24 @@ class GraphQLQueryParser {
   ]) {
     final whereContent = _extractBalancedBraces(document, 'where');
     if (whereContent == null || whereContent.trim().isEmpty) {
+      // Fallback for primary key queries: e.g. user_by_pk(id: $id) or (id: "123")
+      final pkMatch = RegExp(r'\(\s*(?:pk_columns\s*:\s*\{)?\s*id\s*:\s*([^,\}\)]+)')
+          .firstMatch(document);
+      if (pkMatch != null) {
+        final rawVal = pkMatch.group(1)!.trim();
+        dynamic val;
+        if (rawVal.startsWith(r'$')) {
+          val = variables?[rawVal.substring(1)];
+        } else {
+          val = _parseLiteral(rawVal);
+        }
+        if (val != null) {
+          return ParsedWhere(
+            clause: '"id" = ?',
+            args: [_normalizeSqliteValue(val)],
+          );
+        }
+      }
       return null;
     }
 
@@ -157,6 +175,37 @@ class GraphQLQueryParser {
     }
 
     return raw;
+  }
+
+  /// Detects whether a GraphQL document contains nested selection blocks (joins/relations).
+  /// For instance: `user_enterprise { id_user enterprise { name } }` contains a nested selection block.
+  /// Ignores any braces inside argument parentheses e.g. `(where: { ... })`.
+  static bool hasNestedSelections(String document) {
+    final cleanDoc = document.replaceAll(RegExp(r'#[^\n\r]*'), '');
+    int parenDepth = 0;
+    int braceDepth = 0;
+
+    for (int i = 0; i < cleanDoc.length; i++) {
+      final char = cleanDoc[i];
+      if (char == '(') {
+        parenDepth++;
+      } else if (char == ')') {
+        if (parenDepth > 0) parenDepth--;
+      } else if (parenDepth == 0) {
+        if (char == '{') {
+          braceDepth++;
+          if (braceDepth >= 3) {
+            // 1st '{': Operation root
+            // 2nd '{': Root table selection
+            // 3rd '{': Nested object / list relation selection
+            return true;
+          }
+        } else if (char == '}') {
+          if (braceDepth > 0) braceDepth--;
+        }
+      }
+    }
+    return false;
   }
 
   static dynamic _normalizeSqliteValue(dynamic value) {

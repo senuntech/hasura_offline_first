@@ -352,8 +352,7 @@ class SyncEngine {
     }
 
     final bool isMultiTenant = tenantConfig != null;
-    final String queryArgsDef =
-        isMultiTenant ? '(\$tenantId: String!)' : '';
+    final String queryArgsDef = isMultiTenant ? '(\$tenantId: String!)' : '';
     final String tableFilter = isMultiTenant
         ? '(where: { ${tenantConfig!.tenantColumn}: { _eq: \$tenantId } })'
         : '';
@@ -400,6 +399,17 @@ class SyncEngine {
         where: syncedWhere,
         whereArgs: syncedArgs.isNotEmpty ? syncedArgs : null,
       );
+
+      // Check which rows have pending offline changes to protect them from stale remote overwrite
+      final pendingRows = await db.query(
+        table,
+        columns: ['id'],
+        where: "__sync_status != 'synced'",
+      );
+      final pendingIds = pendingRows.map((r) => r['id'].toString()).toSet();
+
+      final batch = db.batch();
+
       for (final localRow in localSyncedRows) {
         final localId = localRow['id'].toString();
         if (!remoteIds.contains(localId)) {
@@ -407,28 +417,18 @@ class SyncEngine {
             'Server Authority (Pull): Purging locally missing row "$localId" in table "$table"',
             name: 'SyncEngine',
           );
-          await db.delete(table, where: 'id = ?', whereArgs: [localId]);
+          batch.delete(table, where: 'id = ?', whereArgs: [localId]);
         }
       }
 
-      // UPSERT remote rows into local SQLite
+      // UPSERT remote rows into local SQLite via high-performance batch
       for (final remoteRow in remoteRows) {
         final id = remoteRow['id'].toString();
 
-        // Check if there is an offline modification pending for this row
-        final localExisting = await db.query(
-          table,
-          where: 'id = ?',
-          whereArgs: [id],
-        );
-
-        if (localExisting.isNotEmpty) {
-          final localSyncStatus = localExisting.first['__sync_status'];
-          if (localSyncStatus != null && localSyncStatus != 'synced') {
-            // Local record has pending changes that have not yet been confirmed by Push.
-            // Do NOT overwrite pending local changes with stale server data.
-            continue;
-          }
+        if (pendingIds.contains(id)) {
+          // Local record has pending changes that have not yet been confirmed by Push.
+          // Do NOT overwrite pending local changes with stale server data.
+          continue;
         }
 
         // Fresh or synced record: insert or replace directly
@@ -437,12 +437,14 @@ class SyncEngine {
           ..['__is_deleted'] = 0
           ..['__updated_at'] = DateTime.now().toIso8601String();
 
-        await db.insert(
+        batch.insert(
           table,
           sanitized,
           conflictAlgorithm: sqflite.ConflictAlgorithm.replace,
         );
       }
+
+      await batch.commit(noResult: true);
 
       localRepository.notifyChange(table, 'sync');
     }
