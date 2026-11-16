@@ -293,5 +293,92 @@ void main() {
       expect(eventReceived, isNotNull);
       expect(eventReceived?.id, equals('item-to-delete'));
     });
+
+    test('SyncEngine purges local record when deleted directly in remote Hasura base upon reconnect', () async {
+      final fakeConn = FakeConnectivity()..emit([ConnectivityResult.none]);
+      final netManager = NetworkManager(connectivity: fakeConn);
+      final localRepo = LocalTableRepository(databaseProvider: dbProvider);
+
+      final db = await dbProvider.database;
+      // Pre-populate 2 local records
+      await db.insert('teste_offilne', {
+        'id': 'item-survivor',
+        'task': 'Item que permanece',
+      });
+      await db.insert('teste_offilne', {
+        'id': 'item-deleted-on-server',
+        'task': 'Item apagado direto no banco',
+      });
+
+      // Mock server returns ONLY item-survivor (item-deleted-on-server was deleted on Hasura!)
+      final mockHttpClient = MockClient((request) async {
+        final body = jsonDecode(request.body) as Map<String, dynamic>;
+        final doc = body['query'] as String? ?? '';
+        if (doc.contains('__type')) {
+          return http.Response(jsonEncode({
+            'data': {
+              '__type': {
+                'name': 'teste_offilne',
+                'fields': [
+                  {'name': 'id', 'type': {'name': 'String', 'kind': 'SCALAR'}},
+                  {'name': 'task', 'type': {'name': 'String', 'kind': 'SCALAR'}},
+                ]
+              }
+            }
+          }), 200, headers: {'content-type': 'application/json'});
+        }
+
+        // Pull query returns only surviving record
+        return http.Response(jsonEncode({
+          'data': {
+            'teste_offilne': [
+              {'id': 'item-survivor', 'task': 'Item que permanece'}
+            ]
+          }
+        }), 200, headers: {'content-type': 'application/json'});
+      });
+
+      final hasuraClient = HasuraHttpClient(client: mockHttpClient);
+      final migrator = SchemaMigrator(
+        httpClient: hasuraClient,
+        url: 'https://test.io/graphql',
+        headersProvider: () => {},
+      );
+
+      final syncEngine = SyncEngine(
+        databaseProvider: dbProvider,
+        localRepository: localRepo,
+        schemaMigrator: migrator,
+        conflictResolver: conflictResolver,
+        httpClient: hasuraClient,
+        networkManager: netManager,
+        url: 'https://test.io/graphql',
+        headersProvider: () => {},
+        tables: {'teste_offilne'},
+      );
+
+      // Verify both items exist initially
+      var rows = await db.query('teste_offilne');
+      expect(rows.length, equals(2));
+
+      // Network comes back online!
+      fakeConn.emit([ConnectivityResult.wifi]);
+      await Future.delayed(const Duration(milliseconds: 100));
+      await syncEngine.synchronize();
+
+      // The record deleted on the server must have been purged from local SQLite!
+      rows = await db.query('teste_offilne');
+      expect(rows.length, equals(1));
+      expect(rows.first['id'], equals('item-survivor'));
+
+      final deletedRows = await db.query('teste_offilne',
+          where: 'id = ?', whereArgs: ['item-deleted-on-server']);
+      expect(deletedRows, isEmpty);
+
+      syncEngine.dispose();
+      localRepo.dispose();
+      netManager.dispose();
+      fakeConn.dispose();
+    });
   });
 }

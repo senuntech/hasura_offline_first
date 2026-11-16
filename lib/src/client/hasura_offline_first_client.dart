@@ -621,6 +621,8 @@ class HasuraOfflineFirst implements IHasuraConnect {
 
       // If local SQLite already has data, return it immediately with 0ms latency!
       if (localRows.isNotEmpty) {
+        _triggerBackgroundSync(targetTable);
+
         if (key != null) {
           return localRows;
         }
@@ -928,6 +930,22 @@ class HasuraOfflineFirst implements IHasuraConnect {
   Future<void> synchronize() async {
     await _syncManager.synchronize();
     await syncEngine.synchronize();
+  }
+
+  /// Synchronizes a specific registered table immediately with Hasura.
+  @override
+  Future<void> syncTable(String tableName) async {
+    await syncEngine.syncTable(tableName);
+  }
+
+  void _triggerBackgroundSync(String table) {
+    if (syncEngine.registeredTables.contains(table)) {
+      _networkManager.isConnected.then((connected) {
+        if (connected && !syncEngine.isSyncing) {
+          syncEngine.syncTable(table).catchError((_) {});
+        }
+      }).catchError((_) {});
+    }
   }
 
   /// Switches the active tenant, safely closing the current SQLite database and

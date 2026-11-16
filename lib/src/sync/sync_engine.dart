@@ -134,7 +134,11 @@ class SyncEngine {
       // 1. Dynamic Schema Migration for all registered tables
       for (final table in registeredTables) {
         if (networkManager.currentStatus != NetworkStatus.online) break;
-        await schemaMigrator.syncTableSchema(db, table);
+        try {
+          await schemaMigrator.syncTableSchema(db, table);
+        } catch (e) {
+          dev.log('Error syncing schema for table "$table": $e', name: 'SyncEngine');
+        }
       }
 
       // 2. Upstream Sync: Push local mutations to Hasura
@@ -143,7 +147,11 @@ class SyncEngine {
       // 3. Downstream Sync: Pull server truth and apply Remote Authority
       for (final table in registeredTables) {
         if (networkManager.currentStatus != NetworkStatus.online) break;
-        await _pullDeltas(db, table);
+        try {
+          await _pullDeltas(db, table);
+        } catch (e) {
+          dev.log('Error pulling deltas for table "$table": $e', name: 'SyncEngine');
+        }
       }
       await refreshStatus(state: SyncState.synced);
     } catch (e) {
@@ -364,6 +372,25 @@ class SyncEngine {
     );
   }
 
+  /// Synchronizes a specific registered table on demand (schema migration, push mutations, pull deltas).
+  Future<void> syncTable(String table) async {
+    if (_isDisposed) return;
+    final isOnline = await networkManager.isConnected;
+    if (!isOnline) return;
+
+    try {
+      final db = await databaseProvider.database;
+      try {
+        await schemaMigrator.syncTableSchema(db, table);
+      } catch (_) {}
+      await _pushMutations(db);
+      await _pullDeltas(db, table);
+      await refreshStatus();
+    } catch (e) {
+      dev.log('Error in syncTable("$table"): $e', name: 'SyncEngine', error: e);
+    }
+  }
+
   Future<void> _pullDeltas(sqflite.Database db, String table) async {
     // Check if table exists locally before pulling deltas
     final tableCheck = await db.rawQuery(
@@ -386,6 +413,18 @@ class SyncEngine {
       final List<dynamic> cols =
           jsonDecode(meta.first['columns_json'] as String);
       final validCols = cols
+          .map((c) => c['name']?.toString())
+          .where((name) => name != null && !name.startsWith('__'))
+          .toList();
+      if (validCols.isNotEmpty) {
+        fieldsSelection = validCols.join('\n');
+      }
+    }
+
+    // Fallback: If metadata has no columns yet, read directly from SQLite table columns
+    if (fieldsSelection == 'id') {
+      final tableInfo = await db.rawQuery('PRAGMA table_info("$table")');
+      final validCols = tableInfo
           .map((c) => c['name']?.toString())
           .where((name) => name != null && !name.startsWith('__'))
           .toList();
@@ -418,49 +457,75 @@ class SyncEngine {
     );
 
     final response = await httpClient.execute(request);
+    List<dynamic>? remoteList;
     if (response is List) {
+      remoteList = response;
+    } else if (response is Map) {
+      final val = response[table] ?? response['data']?[table];
+      if (val is List) {
+        remoteList = val;
+      }
+    }
+
+    if (remoteList != null) {
       final remoteRows =
-          response.map((r) => Map<String, dynamic>.from(r as Map)).toList();
+          remoteList.map((r) => Map<String, dynamic>.from(r as Map)).toList();
       final remoteIds = remoteRows.map((r) => r['id'].toString()).toSet();
 
-      // SERVER AUTHORITY: Delete local rows marked as 'synced' that no longer exist on server
-      String syncedWhere = "__sync_status = 'synced'";
-      final List<dynamic> syncedArgs = [];
-      if (isMultiTenant) {
-        final tableInfo = await db.rawQuery('PRAGMA table_info("$table")');
-        final colNames =
-            tableInfo.map((c) => c['name'].toString().toLowerCase()).toSet();
-        if (colNames.contains(tenantConfig!.tenantColumn.toLowerCase())) {
-          syncedWhere += ' AND "${tenantConfig!.tenantColumn}" = ?';
-          syncedArgs.add(tenantConfig!.tenantId);
+      // Check which rows have pending offline changes in _sync_log to protect them from stale remote overwrite
+      final pendingLogs = await db.query(
+        '_sync_log',
+        columns: ['row_id'],
+        where: 'table_name = ? AND (status = ? OR status = ?)',
+        whereArgs: [table, 'pending', 'failed'],
+      );
+      final pendingIds = pendingLogs.map((l) => l['row_id'].toString()).toSet();
+
+      // SERVER AUTHORITY: Identify all active local rows that should exist on server
+      final tableInfo = await db.rawQuery('PRAGMA table_info("$table")');
+      final colNames =
+          tableInfo.map((c) => c['name'].toString().toLowerCase()).toSet();
+
+      String localRowsWhere = '';
+      if (colNames.contains('__is_deleted')) {
+        localRowsWhere = '(__is_deleted = 0 OR __is_deleted IS NULL)';
+      }
+      final List<dynamic> localRowsArgs = [];
+      if (isMultiTenant &&
+          colNames.contains(tenantConfig!.tenantColumn.toLowerCase())) {
+        if (localRowsWhere.isNotEmpty) {
+          localRowsWhere += ' AND "${tenantConfig!.tenantColumn}" = ?';
+        } else {
+          localRowsWhere = '"${tenantConfig!.tenantColumn}" = ?';
         }
+        localRowsArgs.add(tenantConfig!.tenantId);
       }
 
-      final localSyncedRows = await db.query(
+      final localCandidates = await db.query(
         table,
         columns: ['id'],
-        where: syncedWhere,
-        whereArgs: syncedArgs.isNotEmpty ? syncedArgs : null,
+        where: localRowsWhere.isNotEmpty ? localRowsWhere : null,
+        whereArgs: localRowsArgs.isNotEmpty ? localRowsArgs : null,
       );
-
-      // Check which rows have pending offline changes to protect them from stale remote overwrite
-      final pendingRows = await db.query(
-        table,
-        columns: ['id'],
-        where: "__sync_status != 'synced'",
-      );
-      final pendingIds = pendingRows.map((r) => r['id'].toString()).toSet();
 
       final batch = db.batch();
+      bool hadDeletions = false;
 
-      for (final localRow in localSyncedRows) {
+      for (final localRow in localCandidates) {
         final localId = localRow['id'].toString();
+        // Protect local rows that have pending unpushed changes
+        if (pendingIds.contains(localId)) {
+          continue;
+        }
+
+        // If local record is missing on server, Server Authority deletes it!
         if (!remoteIds.contains(localId)) {
           dev.log(
-            'Server Authority (Pull): Purging locally missing row "$localId" in table "$table"',
+            'Server Authority (Pull): Purging locally deleted row "$localId" in table "$table"',
             name: 'SyncEngine',
           );
           batch.delete(table, where: 'id = ?', whereArgs: [localId]);
+          hadDeletions = true;
         }
       }
 
@@ -475,10 +540,16 @@ class SyncEngine {
         }
 
         // Fresh or synced record: insert or replace directly
-        final sanitized = _sanitize(remoteRow)
-          ..['__sync_status'] = 'synced'
-          ..['__is_deleted'] = 0
-          ..['__updated_at'] = DateTime.now().toIso8601String();
+        final sanitized = _sanitize(remoteRow);
+        if (colNames.contains('__sync_status')) {
+          sanitized['__sync_status'] = 'synced';
+        }
+        if (colNames.contains('__is_deleted')) {
+          sanitized['__is_deleted'] = 0;
+        }
+        if (colNames.contains('__updated_at')) {
+          sanitized['__updated_at'] = DateTime.now().toIso8601String();
+        }
 
         batch.insert(
           table,
@@ -489,6 +560,9 @@ class SyncEngine {
 
       await batch.commit(noResult: true);
 
+      if (hadDeletions) {
+        localRepository.notifyChange(table, 'delete');
+      }
       localRepository.notifyChange(table, 'sync');
     }
   }

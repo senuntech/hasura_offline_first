@@ -106,6 +106,9 @@ abstract class IHasuraConnect {
   /// Synchronizes all pending mutations currently stored in the Outbox.
   Future<void> synchronize();
 
+  /// Synchronizes a specific registered table immediately with Hasura.
+  Future<void> syncTable(String tableName);
+
   /// Closes active connections and listeners.
   void dispose();
 }
