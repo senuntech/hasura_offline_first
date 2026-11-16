@@ -19,10 +19,10 @@ class LogInterceptor extends Interceptor {
   final bool pretty;
 
   LogInterceptor({
-    this.request = true,
-    this.response = true,
-    this.error = true,
-    this.pretty = true,
+    this.request = false,
+    this.response = false,
+    this.error = false,
+    this.pretty = false,
   });
 
   String _formatJson(dynamic data) {
