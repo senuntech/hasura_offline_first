@@ -32,62 +32,89 @@ class GraphQLQueryParser {
     final conditions = <String>[];
     final args = <dynamic>[];
 
-    // Pattern for column: { operator: value } or column: { _is_null: true/false }
-    final clauseRegex = RegExp(
-      r'([a-zA-Z0-9_]+)\s*:\s*\{\s*(_[a-zA-Z0-9_]+)\s*:\s*([^}]+)\s*\}',
+    // Pattern for column: { operator: value, ... }
+    // Handles single or multiple operators within the same column block (e.g. created_at: {_gte: $start, _lte: $end})
+    final blockRegex = RegExp(
+      r'([a-zA-Z0-9_]+)\s*:\s*\{([^}]+)\}',
     );
 
-    for (final match in clauseRegex.allMatches(whereContent)) {
-      final column = match.group(1)!.trim();
-      final op = match.group(2)!.trim();
-      final rawValue = match.group(3)!.trim();
+    // Pattern for operator: value pairs inside a column block
+    final opRegex = RegExp(
+      r'(_[a-zA-Z0-9_]+)\s*:\s*("(?:\\.|[^"\\])*"|' r"'(?:\\.|[^'\\])*'" r'|[^,}\s]+)',
+    );
 
-      // Resolve variables if rawValue starts with $
-      dynamic resolvedValue;
-      if (rawValue.startsWith(r'$')) {
-        final varName = rawValue.substring(1);
-        resolvedValue = variables?[varName];
-      } else {
-        resolvedValue = _parseLiteral(rawValue);
+    for (final blockMatch in blockRegex.allMatches(whereContent)) {
+      final column = blockMatch.group(1)!.trim();
+      if (column == '_and' || column == '_or' || column == '_not') {
+        continue;
       }
 
-      switch (op) {
-        case '_eq':
-          conditions.add('"$column" = ?');
-          args.add(_normalizeSqliteValue(resolvedValue));
-          break;
-        case '_neq':
-          conditions.add('"$column" != ?');
-          args.add(_normalizeSqliteValue(resolvedValue));
-          break;
-        case '_gt':
-          conditions.add('"$column" > ?');
-          args.add(_normalizeSqliteValue(resolvedValue));
-          break;
-        case '_gte':
-          conditions.add('"$column" >= ?');
-          args.add(_normalizeSqliteValue(resolvedValue));
-          break;
-        case '_lt':
-          conditions.add('"$column" < ?');
-          args.add(_normalizeSqliteValue(resolvedValue));
-          break;
-        case '_lte':
-          conditions.add('"$column" <= ?');
-          args.add(_normalizeSqliteValue(resolvedValue));
-          break;
-        case '_like':
-        case '_ilike':
-          conditions.add('"$column" LIKE ?');
-          args.add(resolvedValue?.toString());
-          break;
-        case '_is_null':
-          final isNull = resolvedValue == true || resolvedValue == 'true';
-          conditions.add('"$column" ${isNull ? 'IS NULL' : 'IS NOT NULL'}');
-          break;
-        default:
-          conditions.add('"$column" = ?');
-          args.add(_normalizeSqliteValue(resolvedValue));
+      final innerContent = blockMatch.group(2)!.trim();
+
+      for (final match in opRegex.allMatches(innerContent)) {
+        final op = match.group(1)!.trim();
+        final rawValue = match.group(2)!.trim();
+
+        // Resolve variables if rawValue starts with $
+        dynamic resolvedValue;
+        if (rawValue.startsWith(r'$')) {
+          final varName = rawValue.substring(1);
+          resolvedValue = variables?[varName];
+        } else {
+          resolvedValue = _parseLiteral(rawValue);
+        }
+
+        // SQLite does not accept null in whereArgs (throws IllegalArgumentException).
+        // If resolvedValue is null, handle null semantics safely.
+        if (resolvedValue == null && op != '_is_null') {
+          if (op == '_eq') {
+            conditions.add('"$column" IS NULL');
+          } else if (op == '_neq') {
+            conditions.add('"$column" IS NOT NULL');
+          }
+          // For relational comparisons (_gte, _lte, _gt, _lt, _like) with null,
+          // null cannot be compared in SQL, so skip to avoid invalid SQL / crash.
+          continue;
+        }
+
+        switch (op) {
+          case '_eq':
+            conditions.add('"$column" = ?');
+            args.add(_normalizeSqliteValue(resolvedValue));
+            break;
+          case '_neq':
+            conditions.add('"$column" != ?');
+            args.add(_normalizeSqliteValue(resolvedValue));
+            break;
+          case '_gt':
+            conditions.add('"$column" > ?');
+            args.add(_normalizeSqliteValue(resolvedValue));
+            break;
+          case '_gte':
+            conditions.add('"$column" >= ?');
+            args.add(_normalizeSqliteValue(resolvedValue));
+            break;
+          case '_lt':
+            conditions.add('"$column" < ?');
+            args.add(_normalizeSqliteValue(resolvedValue));
+            break;
+          case '_lte':
+            conditions.add('"$column" <= ?');
+            args.add(_normalizeSqliteValue(resolvedValue));
+            break;
+          case '_like':
+          case '_ilike':
+            conditions.add('"$column" LIKE ?');
+            args.add(resolvedValue?.toString());
+            break;
+          case '_is_null':
+            final isNull = resolvedValue == true || resolvedValue == 'true';
+            conditions.add('"$column" ${isNull ? 'IS NULL' : 'IS NOT NULL'}');
+            break;
+          default:
+            conditions.add('"$column" = ?');
+            args.add(_normalizeSqliteValue(resolvedValue));
+        }
       }
     }
 

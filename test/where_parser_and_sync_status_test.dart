@@ -60,6 +60,69 @@ void main() {
       expect(GraphQLQueryParser.parseLimit(doc), equals(10));
       expect(GraphQLQueryParser.parseOffset(doc), equals(20));
     });
+
+    test('parses multiple operators in a single field block (e.g. date range with variables)', () {
+      const doc = r'''
+        query GetOccurrencesByProject(
+          $id_project: uuid!, 
+          $start_date: timestamptz!, 
+          $end_date: timestamptz!
+        ) {
+          occurrences(
+            where: {
+              id_project: {_eq: $id_project},
+              created_at: {_gte: $start_date, _lte: $end_date}
+            }, 
+            order_by: {created_at: desc}
+          ) {
+            id
+            description
+          }
+        }
+      ''';
+
+      final vars = {
+        'id_project': 'proj-123',
+        'start_date': '2026-11-01T00:00:00.000Z',
+        'end_date': '2026-11-30T23:59:59.999Z',
+      };
+
+      final parsed = GraphQLQueryParser.parseWhere(doc, vars);
+      expect(parsed, isNotNull);
+      expect(
+        parsed!.clause,
+        equals('"id_project" = ? AND "created_at" >= ? AND "created_at" <= ?'),
+      );
+      expect(parsed.args, equals([
+        'proj-123',
+        '2026-11-01T00:00:00.000Z',
+        '2026-11-30T23:59:59.999Z',
+      ]));
+      // Ensure no null values are present in args (which causes sqflite crash)
+      expect(parsed.args.contains(null), isFalse);
+    });
+
+    test('safely handles null variable without adding null to whereArgs', () {
+      const doc = r'''
+        query FilterWithNull($category: String, $optional_filter: String) {
+          tasks(where: { category: { _eq: $category }, description: { _like: $optional_filter } }) {
+            id
+          }
+        }
+      ''';
+
+      final vars = <String, dynamic>{
+        'category': null,
+        'optional_filter': null,
+      };
+
+      final parsed = GraphQLQueryParser.parseWhere(doc, vars);
+      expect(parsed, isNotNull);
+      // _eq with null resolves to IS NULL, and null relational is omitted
+      expect(parsed!.clause, equals('"category" IS NULL'));
+      expect(parsed.args, isEmpty);
+      expect(parsed.args.contains(null), isFalse);
+    });
   });
 
   group('Local Query with where filter & SyncStatusStream Tests', () {
